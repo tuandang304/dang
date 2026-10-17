@@ -4,7 +4,7 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "r4d_clean_full_upgraded_dang_med"
+    variant_name: str = "r5c_full_dang_med_v2"
     seed: int = 42
 
     # Architecture knobs
@@ -13,19 +13,23 @@ class ExperimentConfig:
     vit_backbone: str = "vit_base_patch14_dinov2.lvd142m"
     peft_mode: str = "freq_moe_conv_lora"
     lora_rank: int = 4
-    fusion_mode: str = "coarse_gd_ssa"
-    decoder_mode: str = "a2bd"
+    adapter_start_block: int = 6
+    fusion_mode: str = "safe_gd_ssa_v2"
+    decoder_mode: str = "detail_a2bd_v2"
     embed_dim: int = 192
 
-    # Loss & optimization knobs
+    # Loss & optimization knobs (Recipe v2)
     use_boundary_loss: bool = True
-    boundary_loss_weight: float = 0.4
-    deep_supervision: bool = False
+    use_boundary_feedback: bool = True
+    boundary_loss_weight: float = 0.2
+    deep_supervision: bool = True
     img_size: int = 352
     vit_img_size: int = 350          # 25x25 patches for patch_size=14
     batch_size: int = 16
     epochs: int = 20
-    lr: float = 2e-4
+    cnn_lr: float = 6e-5
+    lr: float = 5e-4
+    peft_lr: float = 1e-3
     weight_decay: float = 1e-4
     warmup_epochs: int = 2
     num_workers: int = 2
