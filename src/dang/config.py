@@ -4,7 +4,7 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "r3a_coarse_gd_ssa_boundary_loss"
+    variant_name: str = "r4d_clean_full_upgraded_dang_med"
     seed: int = 42
 
     # Architecture knobs

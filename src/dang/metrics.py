@@ -17,10 +17,11 @@ def compute_sample_metrics(pred_prob: np.ndarray, gt_mask: np.ndarray, threshold
     - dice: Dice similarity coefficient (%)
     - iou: Intersection over Union (%)
     - boundary_f1: Boundary F1-score within 2px tolerance (%)
-    - hd95: 95th percentile Hausdorff Distance (pixels)
+    - hd95: Directed 95th percentile Hausdorff Distance: max(P95(P->G), P95(G->P)) (pixels)
     - mae: Mean Absolute Error (0-1 scale, %)
     - precision: Precision (%)
     - recall: Sensitivity / Recall (%)
+    - gt_area_pct: Foreground lesion area percentage of frame (%)
     """
     pred_bin = (pred_prob >= threshold).astype(bool)
     gt_bin = (gt_mask >= 0.5).astype(bool)
@@ -36,8 +37,9 @@ def compute_sample_metrics(pred_prob: np.ndarray, gt_mask: np.ndarray, threshold
     precision = (inter + eps) / (pred_sum + eps) * 100.0
     recall = (inter + eps) / (gt_sum + eps) * 100.0
     mae = float(np.abs(pred_prob - gt_bin.astype(np.float32)).mean()) * 100.0
+    gt_area_pct = float(gt_bin.mean()) * 100.0
 
-    # Boundary F1 (BF-Score at tolerance = 2 pixels) & HD95
+    # Boundary F1 (BF-Score at tolerance = 2 pixels) & Standard Directed HD95
     pred_b = compute_boundary_mask(pred_bin, dilation_radius=1)
     gt_b = compute_boundary_mask(gt_bin, dilation_radius=1)
 
@@ -62,8 +64,10 @@ def compute_sample_metrics(pred_prob: np.ndarray, gt_mask: np.ndarray, threshold
         b_rec = (d_gt_to_pred <= tol).mean()
         boundary_f1 = (2.0 * b_prec * b_rec + eps) / (b_prec + b_rec + eps) * 100.0
 
-        all_dists = np.concatenate([d_pred_to_gt, d_gt_to_pred])
-        hd95 = float(np.percentile(all_dists, 95))
+        # Standard directed 95th percentile Hausdorff Distance (MedPy / MetricsReloaded convention)
+        hd95_p2g = float(np.percentile(d_pred_to_gt, 95))
+        hd95_g2p = float(np.percentile(d_gt_to_pred, 95))
+        hd95 = max(hd95_p2g, hd95_g2p)
 
     return {
         "dice": float(dice),
@@ -73,11 +77,13 @@ def compute_sample_metrics(pred_prob: np.ndarray, gt_mask: np.ndarray, threshold
         "mae": float(mae),
         "precision": float(precision),
         "recall": float(recall),
+        "gt_area_pct": float(gt_area_pct),
     }
 
 
 def aggregate_metrics(records: list[dict]) -> dict:
     if not records:
         return {}
-    keys = records[0].keys()
+    numeric_keys = ["dice", "iou", "boundary_f1", "hd95", "mae", "precision", "recall"]
+    keys = [k for k in numeric_keys if k in records[0]]
     return {k: float(np.mean([r[k] for r in records])) for k in keys}
