@@ -20,23 +20,34 @@ def compute_sample_metrics(pred_prob: np.ndarray, gt_mask: np.ndarray, threshold
     - hd95_non_empty: Two-way HD95 on non-empty predictions (NaN if prediction is empty)
     - empty_pred: 100.0 if prediction is empty on non-empty GT, else 0.0 (%)
     - mae: Mean Absolute Error (0-1 scale, %)
-    - precision: Precision (%)
+    - precision: Precision (%, 0.0 when prediction is empty on non-empty GT)
     - recall: Sensitivity / Recall (%)
     - gt_area_pct: Foreground lesion area percentage of frame (%)
     """
     pred_bin = (pred_prob >= threshold).astype(bool)
     gt_bin = (gt_mask >= 0.5).astype(bool)
 
-    inter = np.logical_and(pred_bin, gt_bin).sum()
-    pred_sum = pred_bin.sum()
-    gt_sum = gt_bin.sum()
+    inter = float(np.logical_and(pred_bin, gt_bin).sum())
+    pred_sum = float(pred_bin.sum())
+    gt_sum = float(gt_bin.sum())
     union = pred_sum + gt_sum - inter
 
-    eps = 1e-6
-    dice = (2.0 * inter + eps) / (pred_sum + gt_sum + eps) * 100.0
-    iou = (inter + eps) / (union + eps) * 100.0
-    precision = (inter + eps) / (pred_sum + eps) * 100.0
-    recall = (inter + eps) / (gt_sum + eps) * 100.0
+    if pred_sum == 0.0 and gt_sum == 0.0:
+        dice = 100.0
+        iou = 100.0
+        precision = 100.0
+        recall = 100.0
+    elif pred_sum == 0.0 or gt_sum == 0.0:
+        dice = 0.0
+        iou = 0.0
+        precision = 0.0
+        recall = 0.0
+    else:
+        dice = (2.0 * inter / (pred_sum + gt_sum)) * 100.0
+        iou = (inter / union) * 100.0
+        precision = (inter / pred_sum) * 100.0
+        recall = (inter / gt_sum) * 100.0
+
     mae = float(np.abs(pred_prob - gt_bin.astype(np.float32)).mean()) * 100.0
     gt_area_pct = float(gt_bin.mean()) * 100.0
 
