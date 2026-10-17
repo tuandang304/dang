@@ -84,7 +84,9 @@ class MedicalSegDataset(Dataset):
         mask = Image.fromarray(mask_bin, mode="L")
 
         if self.is_train:
-            scale_size = int(self.img_size * random.uniform(0.60, 1.25))
+            # P2: 30% probability of true shrink-and-black-pad zoom-out (realistic endoscopy black border, no mirrored polyps)
+            s = random.uniform(0.65, 0.90) if random.random() < 0.30 else random.uniform(0.95, 1.20)
+            scale_size = int(self.img_size * s)
             img = TF.resize(img, [scale_size, scale_size], interpolation=TF.InterpolationMode.BILINEAR)
             mask = TF.resize(mask, [scale_size, scale_size], interpolation=TF.InterpolationMode.NEAREST)
 
@@ -94,13 +96,12 @@ class MedicalSegDataset(Dataset):
                 img = TF.crop(img, top, left, self.img_size, self.img_size)
                 mask = TF.crop(mask, top, left, self.img_size, self.img_size)
             elif scale_size < self.img_size:
-                # True shrink-and-pad zoom-out so model trains on small (<1-3% area) polyps
                 pad = self.img_size - scale_size
                 left = random.randint(0, pad)
                 top = random.randint(0, pad)
                 padding = [left, top, pad - left, pad - top]
-                img = TF.pad(img, padding, padding_mode="reflect")
-                mask = TF.pad(mask, padding, padding_mode="reflect")
+                img = TF.pad(img, padding, fill=0, padding_mode="constant")
+                mask = TF.pad(mask, padding, fill=0, padding_mode="constant")
 
             if random.random() < 0.5:
                 img = TF.hflip(img)
@@ -171,27 +172,17 @@ def build_dataloaders(cfg):
             "dhash": compute_dhash64(img_b),
         })
 
-    # 800 Train / 100 Val / 100 Held-out Test with perceptual dHash near-duplicate guard
+    # P1: Exact R4 800-image training split; drop only true near-duplicates (dHash <= 4) from Val/Test without swapping
     train_samples = list(all_kvasir_samples[:800])
-    eval_pool = list(all_kvasir_samples[800:1000])
-
-    # Ensure no eval sample is a perceptual near-duplicate (Hamming <= 10) of any train sample
     train_hashes = [s["dhash"] for s in train_samples]
-    for i, ev in enumerate(eval_pool):
-        if any(hamming_dist64(ev["dhash"], th) <= 10 for th in train_hashes):
-            # Swap with a train sample that has no near-duplicates outside its own pair
-            for j in range(len(train_samples) - 1, -1, -1):
-                cand = train_samples[j]
-                other_hashes = [s["dhash"] for k, s in enumerate(train_samples) if k != j] + [
-                    s["dhash"] for k, s in enumerate(eval_pool) if k != i
-                ]
-                if not any(hamming_dist64(cand["dhash"], oh) <= 10 for oh in other_hashes):
-                    train_samples[j], eval_pool[i] = eval_pool[i], train_samples[j]
-                    train_hashes = [s["dhash"] for s in train_samples]
-                    break
+    is_near_dup = lambda s: any(hamming_dist64(s["dhash"], th) <= 4 for th in train_hashes)
 
-    val_samples = eval_pool[:100]
-    id_test_samples = eval_pool[100:200]
+    val_samples = [s for s in all_kvasir_samples[800:900] if not is_near_dup(s)]
+    val_hashes = [s["dhash"] for s in val_samples]
+    id_test_samples = [
+        s for s in all_kvasir_samples[900:1000]
+        if not is_near_dup(s) and not any(hamming_dist64(s["dhash"], vh) <= 4 for vh in val_hashes)
+    ]
 
     ood_rows = pq.read_table(ood_pq).to_pylist()
     ood_samples = []
@@ -216,7 +207,7 @@ def build_dataloaders(cfg):
             "domain": dom,
         })
 
-    assert len(train_samples) == 800 and len(val_samples) == 100 and len(id_test_samples) == 100, "Kvasir split size mismatch"
+    assert len(train_samples) == 800 and len(val_samples) >= 90 and len(id_test_samples) >= 90, "Kvasir split size mismatch"
     assert len(ood_samples) == 272, f"Expected 272 clean OOD frames, got {len(ood_samples)}"
 
     train_ds = MedicalSegDataset(train_samples, img_size=cfg.img_size, is_train=True)
