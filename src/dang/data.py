@@ -1,5 +1,7 @@
+import hashlib
 import io
 import random
+import re
 import numpy as np
 import pyarrow.parquet as pq
 import torch
@@ -12,20 +14,38 @@ from huggingface_hub import hf_hub_download
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-", re.IGNORECASE)
 
-def classify_polypgen_domain(filename: str) -> str:
-    fl = filename.lower()
-    if "c6" in fl or "c5" in fl:
-        return "OOD_C5C6_Egypt"
-    if "c4" in fl:
-        return "OOD_C4_Oxford"
-    if "c3" in fl or fl.startswith("endocv2021_00"):
-        return "OOD_C3_Oslo"
-    if "c2" in fl or "100h" in fl or "olcv" in fl:
+
+def classify_polypgen_official(filename: str) -> str:
+    """
+    Map PolypGen filenames deterministically to the 6 official PolypGen centers
+    (Jha et al., Scientific Data 2023, arXiv:2106.04463, Table 2):
+      - C1: Ambroise Pare Hospital, Paris, France (OLCV / 100H / 100S)
+      - C2: Istituto Oncologico Veneto, Padova, Italy (EndoCV2021_<digits>.jpg)
+      - C3: Centro di Riferimento Oncologico, Aviano, Italy (C3_EndoCV2021_...)
+      - C4: Oslo University Hospital, Oslo, Norway (<seq>_endocv2021_positive_...)
+      - C5: John Radcliffe Hospital, University of Oxford, UK (EndoCV2021_C5_...)
+      - C6: University of Alexandria, Alexandria, Egypt (EndoCV2021_C6_...)
+    UUID-named files belong to Kvasir-SEG and are strictly excluded from OOD.
+    """
+    base = filename.rsplit("/", 1)[-1]
+    if UUID_RE.match(base):
+        return "InDomain_Kvasir_UUID"
+    fl = base.lower()
+    if fl.startswith("c3_endocv"):
+        return "OOD_C3_Aviano"
+    if "endocv" in fl and "_c5_" in fl:
+        return "OOD_C5_Oxford"
+    if "endocv" in fl and "_c6_" in fl:
+        return "OOD_C6_Alexandria"
+    if "_endocv2021_positive" in fl or "_endocv2021_negative" in fl:
+        return "OOD_C4_Oslo"
+    if fl.startswith("endocv2021_"):
         return "OOD_C2_Padova"
-    if "c1" in fl or "_endocv2021_positive" in fl:
+    if "olcv" in fl or re.match(r"^\d+[hs]\d+\.jpg$", fl):
         return "OOD_C1_Paris"
-    return "InDomain_HyperKvasir"
+    return "Unknown"
 
 
 class MedicalSegDataset(Dataset):
@@ -49,7 +69,6 @@ class MedicalSegDataset(Dataset):
         mask = Image.fromarray(mask_bin, mode="L")
 
         if self.is_train:
-            # Multi-scale resize + crop / geometric + photometric augmentation
             scale_size = int(self.img_size * random.uniform(0.9, 1.2))
             img = TF.resize(img, [scale_size, scale_size], interpolation=TF.InterpolationMode.BILINEAR)
             mask = TF.resize(mask, [scale_size, scale_size], interpolation=TF.InterpolationMode.NEAREST)
@@ -110,49 +129,57 @@ def build_dataloaders(cfg):
         repo_type="dataset",
     )
 
-    train_rows = pq.read_table(train_pq).to_pylist()
-    train_samples = [
-        {
-            "img_bytes": r["image"]["bytes"],
-            "mask_bytes": r["annotation"]["bytes"],
-            "name": r["name"],
-            "domain": "Kvasir_InDomain",
-        }
-        for r in train_rows
-    ]
+    raw_kvasir = pq.read_table(train_pq).to_pylist() + pq.read_table(val_pq).to_pylist()
+    # Deterministic sort + fixed split seed (20260101) so Train(800)/Val(100)/Test(100) are
+    # identical across all training seeds and strictly disjoint.
+    raw_kvasir.sort(key=lambda r: r["name"])
+    split_rng = random.Random(20260101)
+    split_rng.shuffle(raw_kvasir)
 
-    val_rows = pq.read_table(val_pq).to_pylist()
-    val_samples = [
-        {
-            "img_bytes": r["image"]["bytes"],
+    kvasir_md5 = set()
+    all_kvasir_samples = []
+    for r in raw_kvasir:
+        img_b = r["image"]["bytes"]
+        kvasir_md5.add(hashlib.md5(img_b).hexdigest())
+        all_kvasir_samples.append({
+            "img_bytes": img_b,
             "mask_bytes": r["annotation"]["bytes"],
             "name": r["name"],
             "domain": "Kvasir_InDomain",
-        }
-        for r in val_rows
-    ]
+        })
+
+    # 800 Train / 100 Val (checkpoint selection only) / 100 Held-out Test (reporting only)
+    train_samples = all_kvasir_samples[:800]
+    val_samples = all_kvasir_samples[800:900]
+    id_test_samples = all_kvasir_samples[900:1000]
 
     ood_rows = pq.read_table(ood_pq).to_pylist()
     ood_samples = []
+    seen_ood_md5 = set()
     for r in ood_rows:
         fn = r["image"].get("path", "unknown.jpg")
-        dom = classify_polypgen_domain(fn)
+        dom = classify_polypgen_official(fn)
         if not dom.startswith("OOD_"):
+            continue
+        img_b = r["image"]["bytes"]
+        digest = hashlib.md5(img_b).hexdigest()
+        # Strict MD5 deduplication against Kvasir-SEG and within OOD
+        if digest in kvasir_md5 or digest in seen_ood_md5:
             continue
         arr = np.array(Image.open(io.BytesIO(r["label"]["bytes"])).convert("L"))
         if arr.max() == 0:
             continue
-        ood_samples.append(
-            {
-                "img_bytes": r["image"]["bytes"],
-                "mask_bytes": r["label"]["bytes"],
-                "name": fn,
-                "domain": dom,
-            }
-        )
+        seen_ood_md5.add(digest)
+        ood_samples.append({
+            "img_bytes": img_b,
+            "mask_bytes": r["label"]["bytes"],
+            "name": fn,
+            "domain": dom,
+        })
 
     train_ds = MedicalSegDataset(train_samples, img_size=cfg.img_size, is_train=True)
     val_ds = MedicalSegDataset(val_samples, img_size=cfg.img_size, is_train=False)
+    id_test_ds = MedicalSegDataset(id_test_samples, img_size=cfg.img_size, is_train=False)
     ood_ds = MedicalSegDataset(ood_samples, img_size=cfg.img_size, is_train=False)
 
     g = torch.Generator()
@@ -174,6 +201,13 @@ def build_dataloaders(cfg):
         num_workers=cfg.num_workers,
         pin_memory=True,
     )
+    id_test_loader = DataLoader(
+        id_test_ds,
+        batch_size=cfg.batch_size,
+        shuffle=False,
+        num_workers=cfg.num_workers,
+        pin_memory=True,
+    )
     ood_loader = DataLoader(
         ood_ds,
         batch_size=cfg.batch_size,
@@ -181,4 +215,4 @@ def build_dataloaders(cfg):
         num_workers=cfg.num_workers,
         pin_memory=True,
     )
-    return train_loader, val_loader, ood_loader
+    return train_loader, val_loader, id_test_loader, ood_loader
