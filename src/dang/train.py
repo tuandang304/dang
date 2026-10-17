@@ -1,4 +1,6 @@
+import copy
 import json
+import math
 import os
 import random
 import time
@@ -26,49 +28,111 @@ def seed_everything(seed: int):
 
 
 def extract_morphological_boundary_gt(mask: torch.Tensor) -> torch.Tensor:
-    """Compute morphological gradient boundary band on GPU tensor [B, 1, H, W]."""
-    dilated = F.max_pool2d(mask, kernel_size=5, stride=1, padding=2)
-    eroded = -F.max_pool2d(-mask, kernel_size=5, stride=1, padding=2)
+    """Compute 3-pixel morphological gradient boundary band on GPU tensor [B, 1, H, W]."""
+    dilated = F.max_pool2d(mask, kernel_size=3, stride=1, padding=1)
+    eroded = -F.max_pool2d(-mask, kernel_size=3, stride=1, padding=1)
     return (dilated - eroded).clamp(0.0, 1.0)
 
 
-def bce_dice_loss(logits: torch.Tensor, targets: torch.Tensor, weight_map: torch.Tensor | None = None) -> torch.Tensor:
-    if weight_map is not None:
-        bce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
-        wbce = (bce * weight_map).sum(dim=(2, 3)) / weight_map.sum(dim=(2, 3)).clamp(min=1e-5)
-        wbce = wbce.mean()
-    else:
-        wbce = F.binary_cross_entropy_with_logits(logits, targets)
-
-    probs = torch.sigmoid(logits)
-    if weight_map is not None:
-        inter = (probs * targets * weight_map).sum(dim=(2, 3))
-        union = ((probs + targets) * weight_map).sum(dim=(2, 3))
-    else:
-        inter = (probs * targets).sum(dim=(2, 3))
-        union = (probs + targets).sum(dim=(2, 3))
+def bce_dice_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    logits_f = logits.float()
+    targets_f = targets.float()
+    bce = F.binary_cross_entropy_with_logits(logits_f, targets_f)
+    probs = torch.sigmoid(logits_f)
+    inter = (probs * targets_f).sum(dim=(2, 3))
+    union = (probs + targets_f).sum(dim=(2, 3))
     dice_loss = 1.0 - ((2.0 * inter + 1.0) / (union + 1.0)).mean()
-    return 0.5 * wbce + 0.5 * dice_loss
+    return 0.5 * bce + 0.5 * dice_loss
 
 
-def compute_total_loss(outputs: dict, masks: torch.Tensor, cfg) -> torch.Tensor:
+def asymmetric_tversky_loss(logits: torch.Tensor, targets: torch.Tensor, alpha_fp: float = 0.6, beta_fn: float = 0.4) -> torch.Tensor:
+    """Precision-aware Tversky overlap loss (alpha_fp > beta_fn) to suppress false-positive blobs on small polyps."""
+    probs = torch.sigmoid(logits.float())
+    y = targets.float()
+    dims = (1, 2, 3)
+    tp = (probs * y).sum(dims)
+    fp = (probs * (1.0 - y)).sum(dims)
+    fn = ((1.0 - probs) * y).sum(dims)
+    tversky = (tp + 1.0) / (tp + alpha_fp * fp + beta_fn * fn + 1.0)
+    return (1.0 - tversky).mean()
+
+
+def compute_total_loss(outputs: dict, masks: torch.Tensor, cfg, epoch: int = 1) -> torch.Tensor:
     logits = outputs["logits"]
+    # Unweighted region BCE/Dice + Precision-aware Asymmetric Tversky loss
+    region_loss = bce_dice_loss(logits, masks)
+    tversky_loss = asymmetric_tversky_loss(logits, masks, alpha_fp=0.60, beta_fn=0.40)
+    loss = region_loss + 0.20 * tversky_loss
+
     if cfg.use_boundary_loss:
         edge_gt = extract_morphological_boundary_gt(masks)
-        weight_map = 1.0 + 4.0 * F.avg_pool2d(edge_gt, kernel_size=15, stride=1, padding=7)
-        main_loss = bce_dice_loss(logits, masks, weight_map=weight_map)
         edge_loss = bce_dice_loss(outputs["boundary_logits"], edge_gt)
-        loss = main_loss + cfg.boundary_loss_weight * edge_loss
-    else:
-        weight_map = None
-        loss = bce_dice_loss(logits, masks, weight_map=None)
+        ramp = min(1.0, max(0.1, (epoch - 1) / 5.0))
+        loss = loss + cfg.boundary_loss_weight * ramp * edge_loss
 
     if cfg.deep_supervision:
         aux_loss = 0.0
         for aux_logit in outputs["aux_logits"]:
-            aux_loss = aux_loss + bce_dice_loss(aux_logit, masks, weight_map=weight_map)
-        loss = loss + 0.3 * (aux_loss / len(outputs["aux_logits"]))
+            aux_loss = aux_loss + bce_dice_loss(aux_logit, masks)
+        loss = loss + 0.25 * (aux_loss / len(outputs["aux_logits"]))
     return loss
+
+
+def build_optimizer(model: nn.Module, cfg) -> torch.optim.Optimizer:
+    """
+    Separate learning rates and weight decay across:
+      - Pretrained ConvNeXt backbone (cnn_lr, gentle fine-tuning to prevent forgetting)
+      - DINOv2 Freq-MoE Conv-LoRA adapters (peft_lr, fast low-rank adaptation)
+      - Newly initialized fusion & decoder modules (new_lr)
+    """
+    cnn_lr = getattr(cfg, "cnn_lr", 6e-5)
+    new_lr = getattr(cfg, "lr", 5e-4)
+    peft_lr = getattr(cfg, "peft_lr", 1e-3)
+
+    groups = defaultdict(list)
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        no_decay = (
+            p.ndim <= 1
+            or name.endswith(".bias")
+            or "gamma" in name
+            or "scale_" in name
+            or "boundary_alpha" in name
+            or "norm" in name
+        )
+        if name.startswith("cnn."):
+            family = "cnn"
+            base_lr = cnn_lr
+            wd = 0.0 if no_decay else 0.02
+        elif name.startswith("vit."):
+            family = "peft"
+            base_lr = peft_lr
+            wd = 0.0
+        else:
+            family = "new"
+            base_lr = new_lr
+            wd = 0.0 if no_decay else cfg.weight_decay
+        groups[(family, base_lr, wd)].append(p)
+
+    param_groups = [
+        {"params": params, "lr": base_lr, "base_lr": base_lr, "weight_decay": wd, "family": fam}
+        for (fam, base_lr, wd), params in groups.items()
+    ]
+    return torch.optim.AdamW(param_groups)
+
+
+@torch.no_grad()
+def update_ema(ema_model: nn.Module, model: nn.Module, step: int, max_decay: float = 0.992):
+    decay = min(max_decay, (1.0 + step) / (10.0 + step))
+    ema_sd = ema_model.state_dict()
+    model_sd = model.state_dict()
+    for k, v in ema_sd.items():
+        mv = model_sd[k]
+        if v.dtype.is_floating_point:
+            v.mul_(decay).add_(mv.detach(), alpha=1.0 - decay)
+        else:
+            v.copy_(mv)
 
 
 @torch.no_grad()
@@ -175,7 +239,7 @@ def main():
     gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
 
     print("=" * 80)
-    print(f"DANG-Med Clean Protocol Runner | Variant: {cfg.variant_name} | Seed: {cfg.seed}")
+    print(f"DANG-Med v2 Clean Protocol Runner | Variant: {cfg.variant_name} | Seed: {cfg.seed}")
     print(f"Device: {gpu_name} | Resolution: {cfg.img_size}x{cfg.img_size} | Epochs: {cfg.epochs}")
     print(f"Effective Config: {json.dumps(cfg.to_dict(), sort_keys=True)}")
     print("=" * 80, flush=True)
@@ -192,6 +256,9 @@ def main():
     )
 
     model = DANGModel(cfg).to(device)
+    ema_model = copy.deepcopy(model).to(device)
+    ema_model.eval()
+
     eff = measure_efficiency(model, cfg, device)
     print(
         f"Model Efficiency: Total={eff['total_params_m']:.2f}M | "
@@ -201,7 +268,11 @@ def main():
     )
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(trainable_params, lr=cfg.lr, weight_decay=cfg.weight_decay)
+    optimizer = build_optimizer(model, cfg)
+
+    total_steps = cfg.epochs * len(train_loader)
+    warmup_steps = max(1, cfg.warmup_epochs * len(train_loader))
+    global_step = 0
 
     best_val_dice = -1.0
     best_state = None
@@ -210,15 +281,6 @@ def main():
 
     for epoch in range(1, cfg.epochs + 1):
         ep_t0 = time.time()
-        if epoch <= cfg.warmup_epochs:
-            lr_scale = epoch / max(1, cfg.warmup_epochs)
-        else:
-            progress = (epoch - cfg.warmup_epochs) / max(1, cfg.epochs - cfg.warmup_epochs)
-            lr_scale = 0.05 + 0.95 * 0.5 * (1.0 + np.cos(np.pi * progress))
-        cur_lr = cfg.lr * lr_scale
-        for pg in optimizer.param_groups:
-            pg["lr"] = cur_lr
-
         model.train()
         if cfg.use_dinov2:
             model.vit.eval()
@@ -230,137 +292,173 @@ def main():
         running_loss = 0.0
         n_batches = 0
         for batch in train_loader:
+            if global_step < warmup_steps:
+                lr_scale = float(global_step + 1) / float(warmup_steps)
+            else:
+                progress = float(global_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+                lr_scale = 0.05 + 0.95 * 0.5 * (1.0 + math.cos(math.pi * progress))
+            for pg in optimizer.param_groups:
+                pg["lr"] = pg["base_lr"] * lr_scale
+
             images = batch["image"].to(device, non_blocking=True)
             masks = batch["mask"].to(device, non_blocking=True)
 
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16 if device.type == "cuda" else torch.float32):
                 outputs = model(images)
-                loss = compute_total_loss(outputs, masks, cfg)
+                loss = compute_total_loss(outputs, masks, cfg, epoch=epoch)
 
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=3.0)
             optimizer.step()
+
+            update_ema(ema_model, model, global_step)
+            global_step += 1
 
             running_loss += float(loss.item())
             n_batches += 1
 
         train_loss = running_loss / max(1, n_batches)
-        val_res = evaluate_loader(model, val_loader, device, full_metrics=False)
-        val_dice = val_res["micro"]["dice"]
-        val_iou = val_res["micro"]["iou"]
+        val_raw = evaluate_loader(model, val_loader, device, full_metrics=False)
+        val_ema = evaluate_loader(ema_model, val_loader, device, full_metrics=False)
 
-        if epoch % 5 == 0 or epoch == cfg.epochs:
-            ood_quick = evaluate_loader(model, ood_loader, device, full_metrics=False)
-            ood_macro_dice = ood_quick["macro"]["dice"]
-            ood_micro_dice = ood_quick["micro"]["dice"]
+        if val_ema["micro"]["dice"] >= val_raw["micro"]["dice"]:
+            val_dice = val_ema["micro"]["dice"]
+            val_iou = val_ema["micro"]["iou"]
+            cand_model = ema_model
+            src_tag = "EMA"
         else:
-            ood_macro_dice = None
-            ood_micro_dice = None
+            val_dice = val_raw["micro"]["dice"]
+            val_iou = val_raw["micro"]["iou"]
+            cand_model = model
+            src_tag = "RAW"
 
         # Strictly select checkpoint on held-out Kvasir-Val (never on Test or OOD)
         if val_dice > best_val_dice:
             best_val_dice = val_dice
             best_epoch = epoch
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            best_state = {k: v.detach().cpu().clone() for k, v in cand_model.state_dict().items()}
 
         ep_time = time.time() - ep_t0
+        cur_new_lr = max(pg["lr"] for pg in optimizer.param_groups)
         row = {
             "epoch": epoch,
             "train_loss": round(train_loss, 4),
             "val_dice": round(val_dice, 2),
             "val_iou": round(val_iou, 2),
-            "ood_macro_dice": round(ood_macro_dice, 2) if ood_macro_dice is not None else None,
-            "ood_micro_dice": round(ood_micro_dice, 2) if ood_micro_dice is not None else None,
-            "lr": round(cur_lr, 6),
+            "val_src": src_tag,
+            "lr": round(cur_new_lr, 6),
             "time_s": round(ep_time, 2),
         }
         history.append(row)
 
-        ood_str = f" | ood_macro_dice={ood_macro_dice:.2f}%" if ood_macro_dice is not None else ""
         print(
             f"[Epoch {epoch:02d}/{cfg.epochs:02d}] "
-            f"loss={train_loss:.4f} | val_dice={val_dice:.2f}% | val_iou={val_iou:.2f}%"
-            f"{ood_str} | lr={cur_lr:.2e} | time={ep_time:.1f}s",
+            f"loss={train_loss:.4f} | val_dice={val_dice:.2f}% ({src_tag}) | val_iou={val_iou:.2f}% "
+            f"| lr={cur_new_lr:.2e} | time={ep_time:.1f}s",
             flush=True,
         )
 
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    final_val = evaluate_loader(model, val_loader, device, full_metrics=True)
-    final_test = evaluate_loader(model, id_test_loader, device, full_metrics=True)
-    final_ood = evaluate_loader(model, ood_loader, device, full_metrics=True)
+    val_final = evaluate_loader(model, val_loader, device, full_metrics=True)
+    id_final = evaluate_loader(model, id_test_loader, device, full_metrics=True)
+    ood_final = evaluate_loader(model, ood_loader, device, full_metrics=True)
 
-    summary = {
+    print("\n" + "=" * 80)
+    print(f"FINAL SUMMARY | Variant: {cfg.variant_name} (Best Val Epoch {best_epoch})")
+    print("-" * 80)
+    print(
+        f"In-Domain Val (Kvasir-Val, n=100): "
+        f"mDice={val_final['micro']['dice']:.2f}% | "
+        f"mIoU={val_final['micro']['iou']:.2f}% | "
+        f"Boundary_F1={val_final['micro']['boundary_f1']:.2f}% | "
+        f"HD95={val_final['micro']['hd95']:.2f}px"
+    )
+    print(
+        f"In-Domain Held-Out Test (Kvasir-Test, n=100): "
+        f"mDice={id_final['micro']['dice']:.2f}% | "
+        f"mIoU={id_final['micro']['iou']:.2f}% | "
+        f"Boundary_F1={id_final['micro']['boundary_f1']:.2f}% | "
+        f"HD95={id_final['micro']['hd95']:.2f}px (non-empty={id_final['micro']['hd95_non_empty']:.2f}px) | "
+        f"MAE={id_final['micro']['mae']:.2f}%"
+    )
+    print(
+        f"OOD Clean 6-Center Macro (n=272): "
+        f"mDice={ood_final['macro']['dice']:.2f}% | "
+        f"mIoU={ood_final['macro']['iou']:.2f}% | "
+        f"Boundary_F1={ood_final['macro']['boundary_f1']:.2f}% | "
+        f"HD95={ood_final['macro']['hd95']:.2f}px (non-empty={ood_final['macro']['hd95_non_empty']:.2f}px) | "
+        f"MAE={ood_final['macro']['mae']:.2f}%"
+    )
+    print(
+        f"OOD Clean 6-Center Micro (All 272 frames): "
+        f"mDice={ood_final['micro']['dice']:.2f}% | "
+        f"mIoU={ood_final['micro']['iou']:.2f}% | "
+        f"Boundary_F1={ood_final['micro']['boundary_f1']:.2f}% | "
+        f"HD95={ood_final['micro']['hd95']:.2f}px (non-empty={ood_final['micro']['hd95_non_empty']:.2f}px) | "
+        f"EmptyPred={ood_final['micro']['empty_pred']:.2f}%"
+    )
+    if ood_final.get("small_lesions"):
+        sm = ood_final["small_lesions"]
+        print(
+            f"OOD Small/Flat Polyps (<3% area, n={ood_final['small_lesions_count']}): "
+            f"mDice={sm['dice']:.2f}% | mIoU={sm['iou']:.2f}% | "
+            f"Boundary_F1={sm['boundary_f1']:.2f}% | Precision={sm['precision']:.2f}% | Recall={sm['recall']:.2f}% | "
+            f"HD95={sm['hd95']:.2f}px"
+        )
+    if ood_final.get("med_large_lesions"):
+        ml = ood_final["med_large_lesions"]
+        print(
+            f"OOD Med/Large Polyps (>=3% area, n={ood_final['med_large_lesions_count']}): "
+            f"mDice={ml['dice']:.2f}% | mIoU={ml['iou']:.2f}% | "
+            f"Boundary_F1={ml['boundary_f1']:.2f}% | Precision={ml['precision']:.2f}% | Recall={ml['recall']:.2f}% | "
+            f"HD95={ml['hd95']:.2f}px"
+        )
+    for dom, dm in ood_final["per_domain"].items():
+        print(
+            f"  -> {dom:17s}: mDice={dm['dice']:.2f}% | mIoU={dm['iou']:.2f}% | "
+            f"Boundary_F1={dm['boundary_f1']:.2f}% | HD95={dm['hd95']:.2f}px (non-empty={dm['hd95_non_empty']:.2f}px)"
+        )
+
+    summary_payload = {
         "variant": cfg.variant_name,
         "config": cfg.to_dict(),
         "gpu": gpu_name,
         "best_epoch": best_epoch,
         "efficiency": eff,
-        "in_domain_kvasir_val": final_val["micro"],
-        "in_domain_kvasir": final_test["micro"],
-        "ood_polypgen_macro": final_ood["macro"],
-        "ood_polypgen_micro": final_ood["micro"],
-        "ood_small_lesions": final_ood["small_lesions"],
-        "ood_small_lesions_count": final_ood["small_lesions_count"],
-        "ood_med_large_lesions": final_ood["med_large_lesions"],
-        "ood_med_large_lesions_count": final_ood["med_large_lesions_count"],
-        "ood_per_center": final_ood["per_domain"],
-        "history": history,
+        "in_domain_kvasir_val": val_final["micro"],
+        "in_domain_kvasir": id_final["micro"],
+        "ood_polypgen_macro": ood_final["macro"],
+        "ood_polypgen_micro": ood_final["micro"],
+        "ood_small_lesions": ood_final.get("small_lesions", {}),
+        "ood_small_lesions_count": ood_final.get("small_lesions_count", 0),
+        "ood_med_large_lesions": ood_final.get("med_large_lesions", {}),
+        "ood_med_large_lesions_count": ood_final.get("med_large_lesions_count", 0),
+        "ood_per_center": ood_final["per_domain"],
     }
-
-    out_dir = os.environ.get("ORX_OUTPUT_DIR", "outputs")
-    Path(out_dir).mkdir(parents=True, exist_ok=True)
-    with open(Path(out_dir) / "metrics.json", "w") as f:
-        json.dump(summary, f, indent=2)
-    with open(Path(out_dir) / "per_image_metrics.json", "w") as f:
-        json.dump({
-            "in_domain_test": final_test["records"],
-            "ood_polypgen": final_ood["records"],
-        }, f, indent=2)
-
-    print("\n" + "=" * 80)
-    print(f"FINAL SUMMARY | Variant: {cfg.variant_name} (Best Val Epoch {best_epoch})")
-    print("-" * 80)
-    val_m = final_val["micro"]
-    in_m = final_test["micro"]
-    ood_mac = final_ood["macro"]
-    ood_mic = final_ood["micro"]
-    ood_sm = final_ood["small_lesions"]
-    print(
-        f"In-Domain Val (Kvasir-Val, n=100): "
-        f"mDice={val_m['dice']:.2f}% | mIoU={val_m['iou']:.2f}% | "
-        f"Boundary_F1={val_m['boundary_f1']:.2f}% | HD95={val_m['hd95']:.2f}px"
-    )
-    print(
-        f"In-Domain Held-Out Test (Kvasir-Test, n=100): "
-        f"mDice={in_m['dice']:.2f}% | mIoU={in_m['iou']:.2f}% | "
-        f"Boundary_F1={in_m['boundary_f1']:.2f}% | HD95={in_m['hd95']:.2f}px | MAE={in_m['mae']:.2f}%"
-    )
-    print(
-        f"OOD Clean 6-Center Macro (n={final_ood['num_samples']}): "
-        f"mDice={ood_mac['dice']:.2f}% | mIoU={ood_mac['iou']:.2f}% | "
-        f"Boundary_F1={ood_mac['boundary_f1']:.2f}% | HD95={ood_mac['hd95']:.2f}px | MAE={ood_mac['mae']:.2f}%"
-    )
-    print(
-        f"OOD Clean 6-Center Micro (All {final_ood['num_samples']} frames): "
-        f"mDice={ood_mic['dice']:.2f}% | mIoU={ood_mic['iou']:.2f}% | "
-        f"Boundary_F1={ood_mic['boundary_f1']:.2f}% | HD95={ood_mic['hd95']:.2f}px | MAE={ood_mic['mae']:.2f}%"
-    )
-    if ood_sm:
-        print(
-            f"OOD Small/Flat Polyps (<3% area, n={final_ood['small_lesions_count']}): "
-            f"mDice={ood_sm['dice']:.2f}% | mIoU={ood_sm['iou']:.2f}% | "
-            f"Boundary_F1={ood_sm['boundary_f1']:.2f}% | HD95={ood_sm['hd95']:.2f}px"
-        )
-    for cname, cm in final_ood["per_domain"].items():
-        print(
-            f"  -> {cname:18s}: mDice={cm['dice']:.2f}% | mIoU={cm['iou']:.2f}% | "
-            f"Boundary_F1={cm['boundary_f1']:.2f}% | HD95={cm['hd95']:.2f}px"
-        )
-    print(f"METRICS_JSON_SINGLE_LINE: {json.dumps({k: v for k, v in summary.items() if k != 'history'})}")
+    print("METRICS_JSON_SINGLE_LINE: " + json.dumps(summary_payload), flush=True)
     print("=" * 80, flush=True)
+
+    out_dir = Path(os.environ.get("ORX_OUTPUT_DIR", "outputs")) / cfg.variant_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with open(out_dir / "summary.json", "w") as f:
+        json.dump(summary_payload, f, indent=2)
+    with open(out_dir / "per_image_metrics.json", "w") as f:
+        json.dump({
+            "val": val_final["records"],
+            "id_test": id_final["records"],
+            "ood_polypgen": ood_final["records"],
+        }, f, indent=2)
+    # Also save at top-level ORX_OUTPUT_DIR for easy retrieval
+    top_out = Path(os.environ.get("ORX_OUTPUT_DIR", "outputs"))
+    with open(top_out / "per_image_metrics.json", "w") as f:
+        json.dump({
+            "val": val_final["records"],
+            "id_test": id_final["records"],
+            "ood_polypgen": ood_final["records"],
+        }, f, indent=2)
 
 
 if __name__ == "__main__":

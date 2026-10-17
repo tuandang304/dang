@@ -17,6 +17,21 @@ IMAGENET_STD = [0.229, 0.224, 0.225]
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-", re.IGNORECASE)
 
 
+def compute_dhash64(img_bytes: bytes) -> int:
+    """Compute 64-bit perceptual difference hash (dHash) on 9x8 grayscale image."""
+    im = Image.open(io.BytesIO(img_bytes)).convert("L").resize((9, 8), Image.Resampling.BILINEAR)
+    arr = np.asarray(im, dtype=np.float32)
+    diff = (arr[:, 1:] > arr[:, :-1]).flatten()
+    val = 0
+    for bit in diff:
+        val = (val << 1) | int(bit)
+    return val
+
+
+def hamming_dist64(a: int, b: int) -> int:
+    return (a ^ b).bit_count()
+
+
 def classify_polypgen_official(filename: str) -> str:
     """
     Map PolypGen filenames deterministically to the 6 official PolypGen centers
@@ -69,7 +84,7 @@ class MedicalSegDataset(Dataset):
         mask = Image.fromarray(mask_bin, mode="L")
 
         if self.is_train:
-            scale_size = int(self.img_size * random.uniform(0.9, 1.2))
+            scale_size = int(self.img_size * random.uniform(0.60, 1.25))
             img = TF.resize(img, [scale_size, scale_size], interpolation=TF.InterpolationMode.BILINEAR)
             mask = TF.resize(mask, [scale_size, scale_size], interpolation=TF.InterpolationMode.NEAREST)
 
@@ -79,8 +94,13 @@ class MedicalSegDataset(Dataset):
                 img = TF.crop(img, top, left, self.img_size, self.img_size)
                 mask = TF.crop(mask, top, left, self.img_size, self.img_size)
             elif scale_size < self.img_size:
-                img = TF.resize(img, [self.img_size, self.img_size], interpolation=TF.InterpolationMode.BILINEAR)
-                mask = TF.resize(mask, [self.img_size, self.img_size], interpolation=TF.InterpolationMode.NEAREST)
+                # True shrink-and-pad zoom-out so model trains on small (<1-3% area) polyps
+                pad = self.img_size - scale_size
+                left = random.randint(0, pad)
+                top = random.randint(0, pad)
+                padding = [left, top, pad - left, pad - top]
+                img = TF.pad(img, padding, padding_mode="reflect")
+                mask = TF.pad(mask, padding, padding_mode="reflect")
 
             if random.random() < 0.5:
                 img = TF.hflip(img)
@@ -96,6 +116,10 @@ class MedicalSegDataset(Dataset):
                 img = TF.adjust_brightness(img, random.uniform(0.85, 1.15))
                 img = TF.adjust_contrast(img, random.uniform(0.85, 1.15))
                 img = TF.adjust_saturation(img, random.uniform(0.85, 1.15))
+            if random.random() < 0.3:
+                img = TF.adjust_hue(img, random.uniform(-0.04, 0.04))
+            if random.random() < 0.3:
+                img = TF.adjust_gamma(img, random.uniform(0.80, 1.25))
         else:
             img = TF.resize(img, [self.img_size, self.img_size], interpolation=TF.InterpolationMode.BILINEAR)
             mask = TF.resize(mask, [self.img_size, self.img_size], interpolation=TF.InterpolationMode.NEAREST)
@@ -130,8 +154,6 @@ def build_dataloaders(cfg):
     )
 
     raw_kvasir = pq.read_table(train_pq).to_pylist() + pq.read_table(val_pq).to_pylist()
-    # Deterministic sort + fixed split seed (20260101) so Train(800)/Val(100)/Test(100) are
-    # identical across all training seeds and strictly disjoint.
     raw_kvasir.sort(key=lambda r: r["name"])
     split_rng = random.Random(20260101)
     split_rng.shuffle(raw_kvasir)
@@ -146,12 +168,30 @@ def build_dataloaders(cfg):
             "mask_bytes": r["annotation"]["bytes"],
             "name": r["name"],
             "domain": "Kvasir_InDomain",
+            "dhash": compute_dhash64(img_b),
         })
 
-    # 800 Train / 100 Val (checkpoint selection only) / 100 Held-out Test (reporting only)
-    train_samples = all_kvasir_samples[:800]
-    val_samples = all_kvasir_samples[800:900]
-    id_test_samples = all_kvasir_samples[900:1000]
+    # 800 Train / 100 Val / 100 Held-out Test with perceptual dHash near-duplicate guard
+    train_samples = list(all_kvasir_samples[:800])
+    eval_pool = list(all_kvasir_samples[800:1000])
+
+    # Ensure no eval sample is a perceptual near-duplicate (Hamming <= 10) of any train sample
+    train_hashes = [s["dhash"] for s in train_samples]
+    for i, ev in enumerate(eval_pool):
+        if any(hamming_dist64(ev["dhash"], th) <= 10 for th in train_hashes):
+            # Swap with a train sample that has no near-duplicates outside its own pair
+            for j in range(len(train_samples) - 1, -1, -1):
+                cand = train_samples[j]
+                other_hashes = [s["dhash"] for k, s in enumerate(train_samples) if k != j] + [
+                    s["dhash"] for k, s in enumerate(eval_pool) if k != i
+                ]
+                if not any(hamming_dist64(cand["dhash"], oh) <= 10 for oh in other_hashes):
+                    train_samples[j], eval_pool[i] = eval_pool[i], train_samples[j]
+                    train_hashes = [s["dhash"] for s in train_samples]
+                    break
+
+    val_samples = eval_pool[:100]
+    id_test_samples = eval_pool[100:200]
 
     ood_rows = pq.read_table(ood_pq).to_pylist()
     ood_samples = []
@@ -163,7 +203,6 @@ def build_dataloaders(cfg):
             continue
         img_b = r["image"]["bytes"]
         digest = hashlib.md5(img_b).hexdigest()
-        # Strict MD5 deduplication against Kvasir-SEG and within OOD
         if digest in kvasir_md5 or digest in seen_ood_md5:
             continue
         arr = np.array(Image.open(io.BytesIO(r["label"]["bytes"])).convert("L"))
@@ -176,6 +215,9 @@ def build_dataloaders(cfg):
             "name": fn,
             "domain": dom,
         })
+
+    assert len(train_samples) == 800 and len(val_samples) == 100 and len(id_test_samples) == 100, "Kvasir split size mismatch"
+    assert len(ood_samples) == 272, f"Expected 272 clean OOD frames, got {len(ood_samples)}"
 
     train_ds = MedicalSegDataset(train_samples, img_size=cfg.img_size, is_train=True)
     val_ds = MedicalSegDataset(val_samples, img_size=cfg.img_size, is_train=False)
