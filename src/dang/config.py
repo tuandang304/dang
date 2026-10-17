@@ -4,8 +4,9 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "r6c_clean_protocol_v3_dang_med_arch_only"
+    variant_name: str = "r7e_canonical_dang_med_v3_5seeds"
     seed: int = 42
+    seeds: tuple[int, ...] = (42, 123, 2026, 73, 101)
 
     # Architecture knobs
     cnn_backbone: str = "convnext_tiny.fb_in22k_ft_in1k_384"
@@ -18,7 +19,7 @@ class ExperimentConfig:
     decoder_mode: str = "detail_a2bd_v2"
     embed_dim: int = 192
 
-    # Loss & optimization knobs (Protocol v3)
+    # Loss & optimization knobs (Clean Protocol v3)
     use_boundary_loss: bool = False
     use_boundary_feedback: bool = False
     boundary_loss_weight: float = 0.2
@@ -35,7 +36,9 @@ class ExperimentConfig:
     num_workers: int = 2
 
     def to_dict(self):
-        return asdict(self)
+        d = asdict(self)
+        d["seeds"] = list(self.seeds)
+        return d
 
 
 def get_config() -> ExperimentConfig:
