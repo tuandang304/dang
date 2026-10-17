@@ -126,17 +126,8 @@ class SS2DLite(nn.Module):
         self.norm = nn.BatchNorm2d(dim)
         self.out_proj = nn.Conv2d(dim, dim, kernel_size=1, bias=False)
 
-    def forward(self, x: torch.Tensor, cond: torch.Tensor | None = None) -> torch.Tensor:
-        B, C, H, W = x.shape
-        xz = self.in_proj(x)
-        u, z = xz.chunk(2, dim=1)
-        u = F.silu(self.dw_conv(u))
-
-        gate_in = torch.cat([u, cond], dim=1) if cond is not None else u
-        # Constrain decay factor a_t in [0.1, 0.95] for stable long-range propagation
-        a = 0.10 + 0.85 * self.decay_proj(gate_in)
-
-        # 1. Horizontal scans (Left->Right and Right->Left): flatten H into batch -> [B*H, C, W]
+    def _scan_2d(self, u: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+        B, C, H, W = u.shape
         u_h = u.permute(0, 2, 1, 3).reshape(B * H, C, W)
         a_h = a.permute(0, 2, 1, 3).reshape(B * H, C, W)
         h_lr = parallel_selective_scan_1d(u_h, a_h).reshape(B, H, C, W).permute(0, 2, 1, 3)
@@ -145,7 +136,6 @@ class SS2DLite(nn.Module):
             dims=[-1],
         ).reshape(B, H, C, W).permute(0, 2, 1, 3)
 
-        # 2. Vertical scans (Top->Bottom and Bottom->Top): flatten W into batch -> [B*W, C, H]
         u_v = u.permute(0, 3, 1, 2).reshape(B * W, C, H)
         a_v = a.permute(0, 3, 1, 2).reshape(B * W, C, H)
         h_tb = parallel_selective_scan_1d(u_v, a_v).reshape(B, W, C, H).permute(0, 2, 3, 1)
@@ -153,8 +143,21 @@ class SS2DLite(nn.Module):
             parallel_selective_scan_1d(torch.flip(u_v, dims=[-1]), torch.flip(a_v, dims=[-1])),
             dims=[-1],
         ).reshape(B, W, C, H).permute(0, 2, 3, 1)
+        return 0.25 * (h_lr + h_rl + h_tb + h_bt)
 
-        ssm_state = 0.25 * (h_lr + h_rl + h_tb + h_bt)
+    def forward(self, x: torch.Tensor, cond: torch.Tensor | None = None) -> torch.Tensor:
+        B, C, H, W = x.shape
+        xz = self.in_proj(x)
+        u, z = xz.chunk(2, dim=1)
+        u = F.silu(self.dw_conv(u))
+
+        gate_in = torch.cat([u, cond], dim=1) if cond is not None else u
+        a = 0.10 + 0.85 * self.decay_proj(gate_in)
+
+        if self.training and (H * W > 484):
+            ssm_state = torch.utils.checkpoint.checkpoint(self._scan_2d, u, a, use_reentrant=False)
+        else:
+            ssm_state = self._scan_2d(u, a)
         out = self.norm(ssm_state) * F.silu(z)
         return x + self.out_proj(out)
 
