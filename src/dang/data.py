@@ -2,6 +2,7 @@ import hashlib
 import io
 import random
 import re
+import zipfile
 import numpy as np
 import pyarrow.parquet as pq
 import torch
@@ -63,6 +64,21 @@ def classify_polypgen_official(filename: str) -> str:
     return "Unknown"
 
 
+def extract_seq_id(filename: str, domain: str) -> str:
+    base = filename.rsplit("/", 1)[-1]
+    if domain == "OOD_C4_Oslo":
+        return f"C4_seq_{base.split('_')[0]}"
+    return f"{domain}_{base}"
+
+
+def decode_binary_mask_np(mask_bytes: bytes) -> np.ndarray:
+    mask_raw = Image.open(io.BytesIO(mask_bytes)).convert("L")
+    mask_np = np.array(mask_raw, dtype=np.float32)
+    if mask_np.max() > 1.0:
+        return mask_np >= 127.5
+    return mask_np > 0.0
+
+
 class MedicalSegDataset(Dataset):
     def __init__(self, samples: list[dict], img_size: int = 352, is_train: bool = False):
         self.samples = samples
@@ -75,13 +91,8 @@ class MedicalSegDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         item = self.samples[idx]
         img = Image.open(io.BytesIO(item["img_bytes"])).convert("RGB")
-        mask_raw = Image.open(io.BytesIO(item["mask_bytes"])).convert("L")
-        mask_np = np.array(mask_raw, dtype=np.float32)
-        if mask_np.max() > 1.0:
-            mask_bin = (mask_np >= 127.5).astype(np.uint8) * 255
-        else:
-            mask_bin = (mask_np > 0.0).astype(np.uint8) * 255
-        mask = Image.fromarray(mask_bin, mode="L")
+        mask_bool = item["native_gt_bin"] if "native_gt_bin" in item else decode_binary_mask_np(item["mask_bytes"])
+        mask = Image.fromarray(mask_bool.astype(np.uint8) * 255, mode="L")
 
         if self.is_train:
             # P2: 30% probability of true shrink-and-black-pad zoom-out (realistic endoscopy black border, no mirrored polyps)
@@ -134,10 +145,15 @@ class MedicalSegDataset(Dataset):
             "mask": mask_t,
             "name": item["name"],
             "domain": item["domain"],
+            "uid": item["uid"],
         }
 
 
-def build_dataloaders(cfg):
+def prepare_all_cohorts() -> dict:
+    """
+    Download and prepare all In-Domain and External OOD cohorts once with strict
+    perceptual (dHash) and cryptographic (MD5) hygiene.
+    """
     train_pq = hf_hub_download(
         "kowndinya23/Kvasir-SEG",
         "data/train-00000-of-00001-7a33e3aba9046bad.parquet",
@@ -148,9 +164,19 @@ def build_dataloaders(cfg):
         "data/validation-00000-of-00001-4d65c2d2950bdc96.parquet",
         repo_type="dataset",
     )
-    ood_pq = hf_hub_download(
+    ood_dev_pq = hf_hub_download(
         "mzschwartz88/combo_polyp",
         "data/validation-00000-of-00001.parquet",
+        repo_type="dataset",
+    )
+    ood_ext_pq = hf_hub_download(
+        "mzschwartz88/combo_polyp",
+        "data/train-00000-of-00001.parquet",
+        repo_type="dataset",
+    )
+    pranet_zip_path = hf_hub_download(
+        "Zyna1121/lightpranet-polyp-data",
+        "TestDataset.zip",
         repo_type="dataset",
     )
 
@@ -159,64 +185,266 @@ def build_dataloaders(cfg):
     split_rng = random.Random(20260101)
     split_rng.shuffle(raw_kvasir)
 
-    kvasir_md5 = set()
+    all_kvasir_md5 = set()
     all_kvasir_samples = []
     for r in raw_kvasir:
         img_b = r["image"]["bytes"]
-        kvasir_md5.add(hashlib.md5(img_b).hexdigest())
+        md5_hex = hashlib.md5(img_b).hexdigest()
+        all_kvasir_md5.add(md5_hex)
+        dh = compute_dhash64(img_b)
         all_kvasir_samples.append({
             "img_bytes": img_b,
             "mask_bytes": r["annotation"]["bytes"],
             "name": r["name"],
             "domain": "Kvasir_InDomain",
-            "dhash": compute_dhash64(img_b),
+            "uid": f"Kvasir_InDomain::{r['name']}",
+            "dhash": dh,
+            "md5": md5_hex,
+            "seq_id": r["name"],
+            "c4_seq_in_dev": False,
+            "min_kvasir_dhash": 0,
         })
 
-    # P1: Exact R4 800-image training split; drop only true near-duplicates (dHash <= 4) from Val/Test without swapping
+    all_kvasir_dhashes = [s["dhash"] for s in all_kvasir_samples]
+
+    def min_dist_to_kvasir(dh: int) -> int:
+        return min(hamming_dist64(dh, kh) for kh in all_kvasir_dhashes)
+
+    # P1: Exact 800-image training split; drop only true near-duplicates (dHash <= 4) from Val/Test without swapping
     train_samples = list(all_kvasir_samples[:800])
     train_hashes = [s["dhash"] for s in train_samples]
-    is_near_dup = lambda s: any(hamming_dist64(s["dhash"], th) <= 4 for th in train_hashes)
+    is_near_train = lambda s: any(hamming_dist64(s["dhash"], th) <= 4 for th in train_hashes)
 
-    val_samples = [s for s in all_kvasir_samples[800:900] if not is_near_dup(s)]
+    val_samples = [s for s in all_kvasir_samples[800:900] if not is_near_train(s)]
     val_hashes = [s["dhash"] for s in val_samples]
     id_test_samples = [
         s for s in all_kvasir_samples[900:1000]
-        if not is_near_dup(s) and not any(hamming_dist64(s["dhash"], vh) <= 4 for vh in val_hashes)
+        if not is_near_train(s) and not any(hamming_dist64(s["dhash"], vh) <= 4 for vh in val_hashes)
     ]
 
-    ood_rows = pq.read_table(ood_pq).to_pylist()
-    ood_samples = []
-    seen_ood_md5 = set()
-    for r in ood_rows:
+    # Cohort 1: PolypGen-Dev (n=272 from combo_polyp validation split)
+    ood_dev_rows = pq.read_table(ood_dev_pq).to_pylist()
+    ood_dev_samples = []
+    seen_dev_md5 = set()
+    dev_dhashes = []
+    dev_c4_seq_ids = set()
+    dev_stats = {"raw_rows": len(ood_dev_rows), "kvasir_uuid_dropped": 0, "empty_mask_dropped": 0, "dup_dropped": 0, "dhash_le4_kvasir": 0}
+
+    for r in ood_dev_rows:
         fn = r["image"].get("path", "unknown.jpg")
         dom = classify_polypgen_official(fn)
+        assert dom != "Unknown", f"Unexpected unknown PolypGen filename in validation split: {fn}"
         if not dom.startswith("OOD_"):
+            dev_stats["kvasir_uuid_dropped"] += 1
             continue
         img_b = r["image"]["bytes"]
         digest = hashlib.md5(img_b).hexdigest()
-        if digest in kvasir_md5 or digest in seen_ood_md5:
+        if digest in all_kvasir_md5 or digest in seen_dev_md5:
+            dev_stats["dup_dropped"] += 1
             continue
-        arr = np.array(Image.open(io.BytesIO(r["label"]["bytes"])).convert("L"))
-        if arr.max() == 0:
+        mask_b = r["label"]["bytes"]
+        if not decode_binary_mask_np(mask_b).any():
+            dev_stats["empty_mask_dropped"] += 1
             continue
-        seen_ood_md5.add(digest)
-        ood_samples.append({
+        dh = compute_dhash64(img_b)
+        min_kd = min_dist_to_kvasir(dh)
+        if min_kd <= 4:
+            dev_stats["dhash_le4_kvasir"] += 1
+        seen_dev_md5.add(digest)
+        dev_dhashes.append(dh)
+        seq_id = extract_seq_id(fn, dom)
+        if dom == "OOD_C4_Oslo":
+            dev_c4_seq_ids.add(seq_id)
+        ood_dev_samples.append({
             "img_bytes": img_b,
-            "mask_bytes": r["label"]["bytes"],
+            "mask_bytes": mask_b,
             "name": fn,
             "domain": dom,
+            "uid": f"PolypGenDev::{dom}::{fn}",
+            "dhash": dh,
+            "md5": digest,
+            "seq_id": seq_id,
+            "c4_seq_in_dev": False,
+            "min_kvasir_dhash": min_kd,
         })
 
-    assert len(train_samples) == 800 and len(val_samples) >= 90 and len(id_test_samples) >= 90, "Kvasir split size mismatch"
-    assert len(ood_samples) == 272, f"Expected 272 clean OOD frames, got {len(ood_samples)}"
+    # Cohort 2: PolypGen-Extended Holdout (from combo_polyp train split, strictly disjoint from Kvasir and PolypGen-Dev)
+    ood_ext_rows = pq.read_table(ood_ext_pq).to_pylist()
+    ood_ext_samples = []
+    seen_ext_md5 = set()
+    ext_dhashes = []
+    ext_stats = {
+        "raw_rows": len(ood_ext_rows),
+        "kvasir_uuid_dropped": 0,
+        "empty_mask_dropped": 0,
+        "kvasir_dup_or_dhash_le4_dropped": 0,
+        "dev_dup_or_dhash_le4_dropped": 0,
+        "intra_ext_dhash_le4_dropped": 0,
+        "c4_seq_shared_with_dev_count": 0,
+    }
 
-    train_ds = MedicalSegDataset(train_samples, img_size=cfg.img_size, is_train=True)
-    val_ds = MedicalSegDataset(val_samples, img_size=cfg.img_size, is_train=False)
-    id_test_ds = MedicalSegDataset(id_test_samples, img_size=cfg.img_size, is_train=False)
-    ood_ds = MedicalSegDataset(ood_samples, img_size=cfg.img_size, is_train=False)
+    for r in ood_ext_rows:
+        fn = r["image"].get("path", "unknown.jpg")
+        dom = classify_polypgen_official(fn)
+        assert dom != "Unknown", f"Unexpected unknown PolypGen filename in train split: {fn}"
+        if not dom.startswith("OOD_"):
+            ext_stats["kvasir_uuid_dropped"] += 1
+            continue
+        img_b = r["image"]["bytes"]
+        digest = hashlib.md5(img_b).hexdigest()
+        dh = compute_dhash64(img_b)
+        min_kd = min_dist_to_kvasir(dh)
+        if digest in all_kvasir_md5 or min_kd <= 4:
+            ext_stats["kvasir_dup_or_dhash_le4_dropped"] += 1
+            continue
+        if digest in seen_dev_md5 or any(hamming_dist64(dh, ddh) <= 4 for ddh in dev_dhashes):
+            ext_stats["dev_dup_or_dhash_le4_dropped"] += 1
+            continue
+        if digest in seen_ext_md5 or any(hamming_dist64(dh, edh) <= 4 for edh in ext_dhashes):
+            ext_stats["intra_ext_dhash_le4_dropped"] += 1
+            continue
+        mask_b = r["label"]["bytes"]
+        if not decode_binary_mask_np(mask_b).any():
+            ext_stats["empty_mask_dropped"] += 1
+            continue
+        seen_ext_md5.add(digest)
+        ext_dhashes.append(dh)
+        seq_id = extract_seq_id(fn, dom)
+        c4_shared = (dom == "OOD_C4_Oslo") and (seq_id in dev_c4_seq_ids)
+        if c4_shared:
+            ext_stats["c4_seq_shared_with_dev_count"] += 1
+        ood_ext_samples.append({
+            "img_bytes": img_b,
+            "mask_bytes": mask_b,
+            "name": fn,
+            "domain": dom,
+            "uid": f"PolypGenExt::{dom}::{fn}",
+            "dhash": dh,
+            "md5": digest,
+            "seq_id": seq_id,
+            "c4_seq_in_dev": c4_shared,
+            "min_kvasir_dhash": min_kd,
+        })
+
+    # Cohort 3: PraNet External Benchmarks (CVC-300, CVC-ClinicDB, CVC-ColonDB, ETIS-LaribPolypDB)
+    pranet_benchmarks = [
+        ("CVC-300", "Ext_CVC_300"),
+        ("CVC-ClinicDB", "Ext_CVC_ClinicDB"),
+        ("CVC-ColonDB", "Ext_CVC_ColonDB"),
+        ("ETIS-LaribPolypDB", "Ext_ETIS_LaribPolypDB"),
+    ]
+    pranet_samples = []
+    seen_pranet_md5 = set()
+    pranet_dhashes = []
+    pranet_stats = {}
+
+    with zipfile.ZipFile(pranet_zip_path, "r") as zf:
+        namelist = set(zf.namelist())
+        for folder_name, dom_label in pranet_benchmarks:
+            img_prefix = f"TestDataset/{folder_name}/images/"
+            mask_prefix = f"TestDataset/{folder_name}/masks/"
+            img_files = sorted([
+                n[len(img_prefix):] for n in namelist
+                if n.startswith(img_prefix) and not n.endswith("/") and not n[len(img_prefix):].startswith(".")
+            ])
+            ds_stat = {
+                "raw_files": len(img_files),
+                "kvasir_dhash_le4_dropped": 0,
+                "cross_dup_dhash_le4_dropped": 0,
+                "empty_mask_dropped": 0,
+                "kept": 0,
+            }
+            for fname in img_files:
+                img_entry = img_prefix + fname
+                mask_entry = mask_prefix + fname
+                assert mask_entry in namelist, f"Missing mask {mask_entry} for {img_entry}"
+                img_b = zf.read(img_entry)
+                mask_b = zf.read(mask_entry)
+                im_pil = Image.open(io.BytesIO(img_b))
+                mk_pil = Image.open(io.BytesIO(mask_b))
+                assert im_pil.size == mk_pil.size, f"Size mismatch in {img_entry}: {im_pil.size} vs {mk_pil.size}"
+                if not decode_binary_mask_np(mask_b).any():
+                    ds_stat["empty_mask_dropped"] += 1
+                    continue
+                digest = hashlib.md5(img_b).hexdigest()
+                dh = compute_dhash64(img_b)
+                min_kd = min_dist_to_kvasir(dh)
+                if digest in all_kvasir_md5 or min_kd <= 4:
+                    ds_stat["kvasir_dhash_le4_dropped"] += 1
+                    continue
+                if digest in seen_pranet_md5 or any(hamming_dist64(dh, pdh) <= 4 for pdh in pranet_dhashes):
+                    ds_stat["cross_dup_dhash_le4_dropped"] += 1
+                    continue
+                seen_pranet_md5.add(digest)
+                pranet_dhashes.append(dh)
+                ds_stat["kept"] += 1
+                pranet_samples.append({
+                    "img_bytes": img_b,
+                    "mask_bytes": mask_b,
+                    "name": f"{folder_name}/{fname}",
+                    "domain": dom_label,
+                    "uid": f"{dom_label}::{fname}",
+                    "dhash": dh,
+                    "md5": digest,
+                    "seq_id": f"{dom_label}_{fname}",
+                    "c4_seq_in_dev": False,
+                    "min_kvasir_dhash": min_kd,
+                })
+            pranet_stats[dom_label] = ds_stat
+
+    assert len(train_samples) == 800, f"Expected 800 train samples, got {len(train_samples)}"
+    assert len(val_samples) == 95, f"Expected 95 val samples, got {len(val_samples)}"
+    assert len(id_test_samples) == 90, f"Expected 90 id_test samples, got {len(id_test_samples)}"
+    assert len(ood_dev_samples) == 272, f"Expected 272 PolypGen-Dev samples, got {len(ood_dev_samples)}"
+    assert len(ood_ext_samples) >= 1000, f"Expected >=1000 PolypGen-Extended samples, got {len(ood_ext_samples)}"
+
+    # Build lookup map from uid -> sample metadata (for native-resolution mask evaluation & sequence clustering)
+    uid_lookup = {}
+    for s in val_samples + id_test_samples + ood_dev_samples + ood_ext_samples + pranet_samples:
+        uid_lookup[s["uid"]] = s
+
+    hygiene_manifest = {
+        "kvasir_total_raw": len(all_kvasir_samples),
+        "kvasir_train_kept": len(train_samples),
+        "kvasir_val_kept": len(val_samples),
+        "kvasir_id_test_kept": len(id_test_samples),
+        "polypgen_dev": {**dev_stats, "kept": len(ood_dev_samples)},
+        "polypgen_extended": {**ext_stats, "kept": len(ood_ext_samples)},
+        "pranet_external": pranet_stats,
+        "pranet_external_total_kept": len(pranet_samples),
+    }
+
+    return {
+        "train_samples": train_samples,
+        "val_samples": val_samples,
+        "id_test_samples": id_test_samples,
+        "ood_dev_samples": ood_dev_samples,
+        "ood_ext_samples": ood_ext_samples,
+        "pranet_samples": pranet_samples,
+        "uid_lookup": uid_lookup,
+        "hygiene_manifest": hygiene_manifest,
+    }
+
+
+def build_dataloaders_for_seed(cohorts: dict, cfg, seed: int) -> dict:
+    train_ds = MedicalSegDataset(cohorts["train_samples"], img_size=cfg.img_size, is_train=True)
+    val_ds = MedicalSegDataset(cohorts["val_samples"], img_size=cfg.img_size, is_train=False)
+    id_test_ds = MedicalSegDataset(cohorts["id_test_samples"], img_size=cfg.img_size, is_train=False)
+    ood_dev_ds = MedicalSegDataset(cohorts["ood_dev_samples"], img_size=cfg.img_size, is_train=False)
+    ood_ext_ds = MedicalSegDataset(cohorts["ood_ext_samples"], img_size=cfg.img_size, is_train=False)
+    pranet_ds = MedicalSegDataset(cohorts["pranet_samples"], img_size=cfg.img_size, is_train=False)
 
     g = torch.Generator()
-    g.manual_seed(cfg.seed)
+    g.manual_seed(seed)
+
+    def make_eval_loader(ds):
+        return DataLoader(
+            ds,
+            batch_size=cfg.batch_size,
+            shuffle=False,
+            num_workers=cfg.num_workers,
+            pin_memory=True,
+        )
 
     train_loader = DataLoader(
         train_ds,
@@ -227,25 +455,12 @@ def build_dataloaders(cfg):
         drop_last=True,
         generator=g,
     )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=cfg.batch_size,
-        shuffle=False,
-        num_workers=cfg.num_workers,
-        pin_memory=True,
-    )
-    id_test_loader = DataLoader(
-        id_test_ds,
-        batch_size=cfg.batch_size,
-        shuffle=False,
-        num_workers=cfg.num_workers,
-        pin_memory=True,
-    )
-    ood_loader = DataLoader(
-        ood_ds,
-        batch_size=cfg.batch_size,
-        shuffle=False,
-        num_workers=cfg.num_workers,
-        pin_memory=True,
-    )
-    return train_loader, val_loader, id_test_loader, ood_loader
+
+    return {
+        "train": train_loader,
+        "val": make_eval_loader(val_ds),
+        "id_test": make_eval_loader(id_test_ds),
+        "ood_dev": make_eval_loader(ood_dev_ds),
+        "ood_ext": make_eval_loader(ood_ext_ds),
+        "pranet_ext": make_eval_loader(pranet_ds),
+    }
