@@ -4,16 +4,16 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "baseline_convnext_fpn"
+    variant_name: str = "r1a_frozen_dinov2_concat"
     seed: int = 42
 
     # Architecture knobs
     cnn_backbone: str = "convnext_tiny.fb_in22k_ft_in1k_384"
-    use_dinov2: bool = False
+    use_dinov2: bool = True
     vit_backbone: str = "vit_base_patch14_dinov2.lvd142m"
     peft_mode: str = "none"          # "none", "linear_lora", "conv_lora", "freq_moe_conv_lora"
     lora_rank: int = 4
-    fusion_mode: str = "none"        # "none", "concat", "gd_ssa"
+    fusion_mode: str = "concat"      # "none", "concat", "gd_ssa"
     decoder_mode: str = "fpn"        # "fpn", "a2bd"
     embed_dim: int = 192
 

@@ -215,6 +215,7 @@ def main():
             for m in model.vit.modules():
                 if hasattr(m, "down") and hasattr(m, "up"):
                     m.train()
+                    m.block.eval()
 
         running_loss = 0.0
         n_batches = 0
