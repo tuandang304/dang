@@ -4,21 +4,22 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "r6c_clean_protocol_v3_dang_med_arch_only"
+    variant_name: str = "r7a_baseline_fpn_5seeds"
     seed: int = 42
+    seeds: tuple[int, ...] = (42, 123, 2026, 73, 101)
 
     # Architecture knobs
     cnn_backbone: str = "convnext_tiny.fb_in22k_ft_in1k_384"
-    use_dinov2: bool = True
+    use_dinov2: bool = False
     vit_backbone: str = "vit_base_patch14_dinov2.lvd142m"
-    peft_mode: str = "freq_moe_conv_lora"
+    peft_mode: str = "none"
     lora_rank: int = 4
     adapter_start_block: int = 6
-    fusion_mode: str = "safe_gd_ssa_v2"
-    decoder_mode: str = "detail_a2bd_v2"
+    fusion_mode: str = "none"
+    decoder_mode: str = "fpn"
     embed_dim: int = 192
 
-    # Loss & optimization knobs (Protocol v3)
+    # Loss & optimization knobs (Clean Protocol v3)
     use_boundary_loss: bool = False
     use_boundary_feedback: bool = False
     boundary_loss_weight: float = 0.2
@@ -35,7 +36,9 @@ class ExperimentConfig:
     num_workers: int = 2
 
     def to_dict(self):
-        return asdict(self)
+        d = asdict(self)
+        d["seeds"] = list(self.seeds)
+        return d
 
 
 def get_config() -> ExperimentConfig:
