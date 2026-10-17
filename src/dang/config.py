@@ -4,17 +4,17 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "r3a_coarse_gd_ssa_boundary_loss"
+    variant_name: str = "r4b_clean_baseline_plus_boundary_loss"
     seed: int = 42
 
     # Architecture knobs
     cnn_backbone: str = "convnext_tiny.fb_in22k_ft_in1k_384"
-    use_dinov2: bool = True
+    use_dinov2: bool = False
     vit_backbone: str = "vit_base_patch14_dinov2.lvd142m"
-    peft_mode: str = "freq_moe_conv_lora"
+    peft_mode: str = "none"
     lora_rank: int = 4
-    fusion_mode: str = "coarse_gd_ssa"
-    decoder_mode: str = "a2bd"
+    fusion_mode: str = "none"
+    decoder_mode: str = "fpn"
     embed_dim: int = 192
 
     # Loss & optimization knobs
