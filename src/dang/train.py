@@ -104,7 +104,7 @@ def build_optimizer(model: nn.Module, cfg) -> torch.optim.Optimizer:
         if name.startswith("cnn."):
             family = "cnn"
             base_lr = cnn_lr
-            wd = 0.0 if no_decay else 0.02
+            wd = 0.0 if no_decay else cfg.weight_decay
         elif name.startswith("vit."):
             family = "peft"
             base_lr = peft_lr
@@ -439,6 +439,7 @@ def main():
         "ood_per_center": ood_final["per_domain"],
     }
     print("METRICS_JSON_SINGLE_LINE: " + json.dumps(summary_payload), flush=True)
+    print("PER_IMAGE_JSON_SINGLE_LINE: " + json.dumps({"val": val_final["records"], "id_test": id_final["records"], "ood_polypgen": ood_final["records"]}), flush=True)
     print("=" * 80, flush=True)
 
     out_dir = Path(os.environ.get("ORX_OUTPUT_DIR", "outputs")) / cfg.variant_name
