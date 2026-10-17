@@ -180,9 +180,9 @@ class SS2DLite(nn.Module):
 
 class EdgeSnappedSemUp(nn.Module):
     """
-    Content-Aware Edge-Snapped Semantic Upsampling:
-    Uses sharp local CNN features to predict a per-pixel k*k reassembly kernel over upsampled DINOv2
-    features, snapping coarse 14x14 patch semantics onto fine CNN lesion boundaries.
+    Content-Aware Edge-Snapped Semantic Upsampling (v3):
+    Starts as exact bilinear interpolation (reassembly_scale=0, center-tap bias=6.0) with replicate padding,
+    and learns a content-aware local reassembly residual guided by sharp CNN features.
     """
 
     def __init__(self, dim: int, k: int = 5, dilation: int = 2):
@@ -193,9 +193,11 @@ class EdgeSnappedSemUp(nn.Module):
             ConvBNAct(dim, dim // 4, kernel_size=1, padding=0),
             nn.Conv2d(dim // 4, k * k, kernel_size=3, padding=1, bias=True),
         )
-        # Initialize to uniform box kernel at step 0
         nn.init.zeros_(self.kernel_pred[1].weight)
-        nn.init.zeros_(self.kernel_pred[1].bias)
+        with torch.no_grad():
+            self.kernel_pred[1].bias.zero_()
+            self.kernel_pred[1].bias[(k * k) // 2] = 6.0
+        self.reassembly_scale = nn.Parameter(torch.tensor(0.0))
 
     def forward(self, sem_lr: torch.Tensor, loc_feat: torch.Tensor) -> torch.Tensor:
         B, C = sem_lr.shape[:2]
@@ -203,9 +205,11 @@ class EdgeSnappedSemUp(nn.Module):
         sem_up = F.interpolate(sem_lr, size=(H, W), mode="bilinear", align_corners=False)
         w = F.softmax(self.kernel_pred(loc_feat), dim=1).unsqueeze(1)  # [B, 1, k*k, H, W]
         pad = self.d * (self.k // 2)
-        patches = F.unfold(sem_up, kernel_size=self.k, dilation=self.d, padding=pad)
+        sem_pad = F.pad(sem_up, (pad, pad, pad, pad), mode="replicate")
+        patches = F.unfold(sem_pad, kernel_size=self.k, dilation=self.d, padding=0)
         patches = patches.view(B, C, self.k * self.k, H, W)
-        return (patches * w).sum(dim=2)
+        reassembled = (patches * w).sum(dim=2)
+        return sem_up + torch.tanh(self.reassembly_scale) * (reassembled - sem_up)
 
 
 class GDSSAFusion(nn.Module):
@@ -443,8 +447,8 @@ class DANGModel(nn.Module):
             # p4(11x11, SSM), p3(22x22, SSM), p2(44x44, SSM), p1(88x88, local edge-gated without 88x88 scan)
             self.dec_p4 = DetailFirstDecoderStage(dim, has_top=False, use_ssm=True)
             self.dec_p3 = DetailFirstDecoderStage(dim, has_top=True, use_ssm=True, top_bias=0.0)
-            self.dec_p2 = DetailFirstDecoderStage(dim, has_top=True, use_ssm=True, top_bias=-0.2)
-            self.dec_p1 = DetailFirstDecoderStage(dim, has_top=True, use_ssm=False, top_bias=-0.4)
+            self.dec_p2 = DetailFirstDecoderStage(dim, has_top=True, use_ssm=True, top_bias=0.0)
+            self.dec_p1 = DetailFirstDecoderStage(dim, has_top=True, use_ssm=False, top_bias=0.0)
         elif cfg.decoder_mode == "a2bd":
             self.dec_blocks = nn.ModuleList([A2BDBlock(dim, use_ssm=True) for _ in range(4)])
         else:
