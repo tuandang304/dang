@@ -4,7 +4,7 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "r3a_coarse_gd_ssa_boundary_loss"
+    variant_name: str = "r4c_clean_dang_med_no_boundary_loss"
     seed: int = 42
 
     # Architecture knobs
@@ -18,7 +18,7 @@ class ExperimentConfig:
     embed_dim: int = 192
 
     # Loss & optimization knobs
-    use_boundary_loss: bool = True
+    use_boundary_loss: bool = False
     boundary_loss_weight: float = 0.4
     deep_supervision: bool = False
     img_size: int = 352
