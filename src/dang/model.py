@@ -289,6 +289,19 @@ class DANGModel(nn.Module):
                 self.fusers = nn.ModuleList([
                     GDSSAFusion(dim) for _ in range(4)
                 ])
+            elif cfg.fusion_mode == "coarse_gd_ssa":
+                self.fusers = nn.ModuleList([
+                    ConvBNAct(dim * 2, dim, kernel_size=3, padding=1) if i < 2 else GDSSAFusion(dim)
+                    for i in range(4)
+                ])
+                self.fine_gates = nn.ModuleList([
+                    nn.Sequential(
+                        nn.Conv2d(dim * 2, dim, kernel_size=1, bias=True),
+                        nn.BatchNorm2d(dim),
+                        nn.Sigmoid(),
+                    )
+                    for _ in range(2)
+                ])
 
         if cfg.decoder_mode == "a2bd":
             self.dec_blocks = nn.ModuleList([A2BDBlock(dim) for _ in range(4)])
@@ -358,6 +371,12 @@ class DANGModel(nn.Module):
                     fused_feats.append(self.fusers[i](torch.cat([loc_feats[i], sem_feats[i]], dim=1)))
                 elif self.cfg.fusion_mode == "gd_ssa":
                     fused_feats.append(self.fusers[i](loc_feats[i], sem_feats[i]))
+                elif self.cfg.fusion_mode == "coarse_gd_ssa":
+                    if i < 2:
+                        g = self.fine_gates[i](torch.cat([loc_feats[i], sem_feats[i]], dim=1))
+                        fused_feats.append(loc_feats[i] + g * self.fusers[i](torch.cat([loc_feats[i], sem_feats[i]], dim=1)))
+                    else:
+                        fused_feats.append(self.fusers[i](loc_feats[i], sem_feats[i]))
                 else:
                     fused_feats.append(loc_feats[i] + sem_feats[i])
         else:
