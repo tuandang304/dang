@@ -4,9 +4,9 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "r9e_dang_med_v4_1_flagship"
+    variant_name: str = "r10c_5seed_dang_v4_1_protodpt_passe"
     seed: int = 42
-    seeds: tuple[int, ...] = (42,)
+    seeds: tuple[int, ...] = (43, 44, 45, 46)
 
     # Stress-test S1 (5% Few-Shot Kvasir = 40 images) + Full 100% (800 images)
     run_s1_10pct: bool = True
@@ -24,7 +24,7 @@ class ExperimentConfig:
     # DANG-Med v4.1 Breakthrough Pillars
     use_proto_dpt: bool = True           # Pillar A: 4-Scale DPT Reassembly + Supervised Prototype & Self-Support Margin Prior
     use_passe_envelope: bool = True      # Pillar A+: Prototype-Anchored Spatial Support Envelope (suppresses far-field FP specks)
-    use_style_calib: bool = True         # Pillar B: Zero-Shot Retinex Chromatic Stem + DINO-Conditioned Style Calibrator
+    use_style_calib: bool = False        # Pillar B disabled in R9c to isolate Pillar A + PASSE + Pillar C
     use_fast_strip_ssm: bool = True      # Fast Multi-Scale Axial Strip-SSM (replaces 168-cat Python scan loop)
     fusion_mode: str = "proto_dpt_strip_ssa"   # "none" | "safe_concat" | "safe_gd_ssa_v2" | "proto_dpt_strip_ssa"
     decoder_mode: str = "uncertainty_strip_ssm"  # "fpn" | "detail_a2bd_v2" | "uncertainty_strip_ssm"
