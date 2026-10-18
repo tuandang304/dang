@@ -65,8 +65,8 @@ def bce_dice_loss(logits: torch.Tensor, targets: torch.Tensor, sample_weights: t
 def asymmetric_tversky_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
-    alpha_fp: float = 0.6,
-    beta_fn: float = 0.4,
+    alpha_fp: torch.Tensor | float = 0.6,
+    beta_fn: torch.Tensor | float = 0.4,
     sample_weights: torch.Tensor | None = None,
 ) -> torch.Tensor:
     probs = torch.sigmoid(logits.float())
@@ -83,20 +83,40 @@ def asymmetric_tversky_loss(
     return loss_per_sample.mean()
 
 
+def far_field_morphological_penalty(logits: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
+    """
+    Fast GPU morphological distance-band penalty:
+    Computes multi-ring dilations (4px, 8px, 14px, 20px) around ground-truth masks and penalizes
+    predicted foreground probabilities progressively outside the lesion boundary.
+    Applied identically across all experiment arms (R9a-R9e).
+    """
+    probs = torch.sigmoid(logits.float())
+    m0 = masks.float()
+    d1 = F.max_pool2d(m0, kernel_size=9, stride=1, padding=4)
+    d2 = F.max_pool2d(d1, kernel_size=9, stride=1, padding=4)
+    d3 = F.max_pool2d(d2, kernel_size=13, stride=1, padding=6)
+    d4 = F.max_pool2d(d3, kernel_size=13, stride=1, padding=6)
+    dist_w = 0.25 * (1.0 - d1) + 0.25 * (1.0 - d2) + 0.25 * (1.0 - d3) + 0.25 * (1.0 - d4)
+    return (probs * dist_w.detach()).mean()
+
+
 def compute_total_loss(outputs: dict, masks: torch.Tensor, cfg, epoch: int = 1) -> torch.Tensor:
+    """
+    100% Unconfounded Shared Training Objective across all experiment arms (R9a-R9e):
+    - Smooth size-dependent Tversky: alpha_fp(a) = 0.45 + 0.15 * sigmoid((a - 1.5) / 0.5), beta_fn = 1 - alpha_fp
+    - Sample-level inverse-area weighting for tiny (<1.5%) lesions
+    - Morphological Far-Field Distance Penalty (0.10 weight)
+    """
     logits = outputs["logits"]
-    if getattr(cfg, "use_proto_dpt", False):
-        # Scale-adaptive lesion weighting so tiny (<1.5% area) polyps receive strong recall-preserving supervision
-        area_pct = masks.float().mean(dim=(1, 2, 3)) * 100.0
-        sample_w = ((3.0 / (area_pct + 0.30)) ** 0.45).clamp(1.0, 2.6).detach()
-        alpha_fp, beta_fn = 0.45, 0.55
-    else:
-        sample_w = None
-        alpha_fp, beta_fn = 0.60, 0.40
+    area_pct = masks.float().mean(dim=(1, 2, 3)) * 100.0
+    sample_w = ((3.0 / (area_pct + 0.35)) ** 0.40).clamp(1.0, 2.4).detach()
+    alpha_fp = (0.45 + 0.15 * torch.sigmoid((area_pct - 1.5) / 0.5)).detach()
+    beta_fn = (1.0 - alpha_fp).detach()
 
     region_loss = bce_dice_loss(logits, masks, sample_weights=sample_w)
     tversky_loss = asymmetric_tversky_loss(logits, masks, alpha_fp=alpha_fp, beta_fn=beta_fn, sample_weights=sample_w)
-    loss = region_loss + 0.25 * tversky_loss
+    far_loss = far_field_morphological_penalty(logits, masks)
+    loss = region_loss + 0.25 * tversky_loss + 0.10 * far_loss
 
     if outputs.get("proto_logits") is not None:
         p_logits = outputs["proto_logits"]
@@ -115,7 +135,7 @@ def compute_total_loss(outputs: dict, masks: torch.Tensor, cfg, epoch: int = 1) 
     if cfg.deep_supervision:
         aux_loss = 0.0
         for aux_logit in outputs["aux_logits"]:
-            aux_loss = aux_loss + bce_dice_loss(aux_logit, masks)
+            aux_loss = aux_loss + bce_dice_loss(aux_logit, masks, sample_weights=sample_w)
         loss = loss + 0.25 * (aux_loss / len(outputs["aux_logits"]))
     return loss
 
@@ -526,12 +546,12 @@ def main():
         loaders = build_dataloaders_for_seed(cohorts, cfg, seed)
 
         # ---------------------------------------------------------------------
-        # TRACK 1: S1 (10% Label-Scarce Kvasir = 80 images) + S1xS2 + S1xS3
+        # TRACK 1: S1 (5% Few-Shot Kvasir = 40 images) + S1xS2 + S1xS3
         # ---------------------------------------------------------------------
         s1_summary = {}
         if getattr(cfg, "run_s1_10pct", True):
             print("\n" + "-" * 88)
-            print(f"[Seed {seed}] TRACK S1: 10% Label-Scarce Kvasir Training (n=80, {cfg.s1_epochs} epochs)")
+            print(f"[Seed {seed}] TRACK S1: 5% Few-Shot Kvasir Training (n=40, {cfg.s1_epochs} epochs)")
             print("-" * 88, flush=True)
             seed_everything(seed + 10000)
             s1_model = DANGModel(cfg).to(device)
@@ -547,9 +567,9 @@ def main():
                 device,
                 amp_dtype=amp_dtype,
                 use_scaler=use_scaler,
-                epochs=getattr(cfg, "s1_epochs", 35),
+                epochs=getattr(cfg, "s1_epochs", 40),
                 warmup_epochs=getattr(cfg, "s1_warmup_epochs", 3),
-                tag=f"S1-10pct Seed {seed}",
+                tag=f"S1-5pct Seed {seed}",
             )
 
             s1_id = evaluate_loader(s1_model, loaders["id_test"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True)
@@ -558,7 +578,7 @@ def main():
             s1_s2_tiny_camo = evaluate_loader(s1_model, loaders["s2_tiny_camo"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True)
             s1_s3_adverse = evaluate_loader(s1_model, loaders["s3_adverse"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True)
 
-            print(f"\n--- SEED {seed} TRACK S1 (10% Labels, Best Ep {s1_best_ep}) STRESS-TEST SUMMARY ---")
+            print(f"\n--- SEED {seed} TRACK S1 (5% Few-Shot n=40, Best Ep {s1_best_ep}) STRESS-TEST SUMMARY ---")
             print(
                 f"  [S1 -> Kvasir-Test (n={s1_id['num_samples']})]: "
                 f"Dice={s1_id['micro']['dice']:.2f}% | IoU={s1_id['micro']['iou']:.2f}% | "
@@ -600,7 +620,9 @@ def main():
                 "s1_s3_adverse_macro": s1_s3_adverse["macro"],
                 "s1_s3_adverse_per_corruption": s1_s3_adverse["per_domain"],
             }
+            emit_chunked_records(seed, "s1_id_test", s1_id["records"])
             emit_chunked_records(seed, "s1_ood_dev", s1_ood_dev["records"])
+            emit_chunked_records(seed, "s1_pranet_ext", s1_pranet["records"])
             emit_chunked_records(seed, "s1_s2_tiny_camo", s1_s2_tiny_camo["records"])
             emit_chunked_records(seed, "s1_s3_adverse", s1_s3_adverse["records"])
 

@@ -4,29 +4,30 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "r8e_dang_med_v4_flagship"
+    variant_name: str = "r9a_single_stream_baseline_v4_1"
     seed: int = 42
     seeds: tuple[int, ...] = (42,)
 
-    # Stress-test S1 (10% Label-Scarce Kvasir = 80 images) + Full 100% (800 images)
+    # Stress-test S1 (5% Few-Shot Kvasir = 40 images) + Full 100% (800 images)
     run_s1_10pct: bool = True
-    s1_epochs: int = 35
+    s1_epochs: int = 40
     s1_warmup_epochs: int = 3
 
     # Architecture knobs
     cnn_backbone: str = "convnext_tiny.fb_in22k_ft_in1k_384"
-    use_dinov2: bool = True
+    use_dinov2: bool = False
     vit_backbone: str = "vit_base_patch14_dinov2.lvd142m"
-    peft_mode: str = "freq_moe_conv_lora"
+    peft_mode: str = "none"
     lora_rank: int = 4
     adapter_start_block: int = 8
 
-    # DANG-Med v4 Breakthrough Pillars
-    use_proto_dpt: bool = True           # Pillar A: 4-Scale DPT Reassembly + Supervised Prototype & Self-Support Margin Prior
-    use_style_calib: bool = True         # Pillar B: DINO-Conditioned Low-Freq Style Calibrator + Training MixStyle
-    use_fast_strip_ssm: bool = True      # Fast Multi-Scale Axial Strip-SSM (replaces 168-cat Python scan loop)
-    fusion_mode: str = "proto_dpt_strip_ssa"   # "none" | "safe_concat" | "safe_gd_ssa_v2" | "proto_dpt_strip_ssa"
-    decoder_mode: str = "uncertainty_strip_ssm"  # "fpn" | "detail_a2bd_v2" | "uncertainty_strip_ssm"
+    # DANG-Med v4.1 Breakthrough Pillars (all disabled for R9a Single-Stream Baseline)
+    use_proto_dpt: bool = False
+    use_passe_envelope: bool = False
+    use_style_calib: bool = False
+    use_fast_strip_ssm: bool = False
+    fusion_mode: str = "none"   # "none" | "safe_concat" | "safe_gd_ssa_v2" | "proto_dpt_strip_ssa"
+    decoder_mode: str = "fpn"   # "fpn" | "detail_a2bd_v2" | "uncertainty_strip_ssm"
     embed_dim: int = 192
     proto_dim: int = 128
     num_prototypes: int = 8
