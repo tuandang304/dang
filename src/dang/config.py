@@ -4,21 +4,35 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "r6c_clean_protocol_v3_dang_med_arch_only"
+    variant_name: str = "r8a_single_stream_baseline"
     seed: int = 42
+    seeds: tuple[int, ...] = (42,)
+
+    # Stress-test S1 (10% Label-Scarce Kvasir = 80 images) + Full 100% (800 images)
+    run_s1_10pct: bool = True
+    s1_epochs: int = 35
+    s1_warmup_epochs: int = 3
 
     # Architecture knobs
     cnn_backbone: str = "convnext_tiny.fb_in22k_ft_in1k_384"
-    use_dinov2: bool = True
+    use_dinov2: bool = False
     vit_backbone: str = "vit_base_patch14_dinov2.lvd142m"
-    peft_mode: str = "freq_moe_conv_lora"
+    peft_mode: str = "none"
     lora_rank: int = 4
     adapter_start_block: int = 6
-    fusion_mode: str = "safe_gd_ssa_v2"
-    decoder_mode: str = "detail_a2bd_v2"
-    embed_dim: int = 192
 
-    # Loss & optimization knobs (Protocol v3)
+    # DANG-Med v4 Breakthrough Pillars
+    use_proto_dpt: bool = False           # Pillar A: 4-Scale DPT Reassembly + Supervised Prototype & Self-Support Margin Prior
+    use_style_calib: bool = False         # Pillar B: DINO-Conditioned Low-Freq Style Calibrator + Training MixStyle
+    use_fast_strip_ssm: bool = False      # Fast Multi-Scale Axial Strip-SSM (replaces 168-cat Python scan loop)
+    fusion_mode: str = "none"   # "none" | "safe_concat" | "safe_gd_ssa_v2" | "proto_dpt_strip_ssa"
+    decoder_mode: str = "fpn"  # "fpn" | "detail_a2bd_v2" | "uncertainty_strip_ssm"
+    embed_dim: int = 192
+    proto_dim: int = 128
+    num_prototypes: int = 8
+    proto_loss_weight: float = 0.35
+
+    # Loss & optimization knobs (Clean Protocol v3/v4)
     use_boundary_loss: bool = False
     use_boundary_feedback: bool = False
     boundary_loss_weight: float = 0.2
@@ -35,7 +49,9 @@ class ExperimentConfig:
     num_workers: int = 2
 
     def to_dict(self):
-        return asdict(self)
+        d = asdict(self)
+        d["seeds"] = list(self.seeds)
+        return d
 
 
 def get_config() -> ExperimentConfig:
