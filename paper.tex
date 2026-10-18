@@ -97,7 +97,7 @@ where scales $s_8$ and $s_{16}$ use content-aware \textbf{Edge-Snapped Semantic 
 \end{align}
 During inference (without ground-truth masks), we compute image-specific self-support centroids $c^+ = \text{Norm}(\sum_{u,v} p_{u,v}^2 \hat{Z}_{u,v})$ and $c^- = \text{Norm}(\sum_{u,v} (1-p_{u,v})^2 \hat{Z}_{u,v})$ where $p_{u,v} = \sigma(\pi_{\text{prior}}(u,v))$, yielding the $25\times 25$ prototype margin map:
 \begin{equation}
-  \pi_{\text{proto}}(u,v) = \pi_{\text{prior}}(u,v) + w_{\text{ss}} \cdot 8\bigl(\langle \hat{Z}_{u,v}, c^+\rangle - \langle \hat{Z}_{u,v}, c^-\rangle\bigr).
+  \pi_{\text{proto}}(u,v) = \pi_{\text{prior}}(u,v) + 8w_{\text{ss}}\bigl(\langle \hat{Z}_{u,v}, c^+\rangle - \langle \hat{Z}_{u,v}, c^-\rangle\bigr).
   \label{eq:proto_total}
 \end{equation}
 
@@ -109,16 +109,17 @@ Recall-enhancing prototype priors reduce missed polyps (empty predictions) on di
 \end{equation}
 Upsampling $\mathcal{E}_{\text{env}}$ and $P_{\text{sem}}$ to stride~$4$ ($88\times 88$), PASSE modulates the stride-$4$ decoder logit $Z_{88}$ via two spatial terms:
 \begin{equation}
-  Z_{88}^{\text{PASSE}} = Z_{88} - 2.20\,\frac{\text{ReLU}(0.22 - \mathcal{E}_{\text{env}}^{\uparrow 88})}{0.22} + 1.20\,\text{ReLU}(P_{\text{sem}}^{\uparrow 88} - 0.38).
+  Z_{88}^{\text{PASSE}} = Z_{88} - 2.2\,\frac{\text{ReLU}(0.22 - \mathcal{E}_{\text{env}}^{\uparrow 88})}{0.22} + 1.2\,\text{ReLU}(P_{\text{sem}}^{\uparrow 88} - 0.38).
   \label{eq:passe_mod}
 \end{equation}
 
 \subsection{Uncertainty-Guided Directional Strip Decoder}
 At each pyramid scale $s \in \{s_8, s_{16}, s_{32}\}$, \textbf{GDSSAFusion} aligns local CNN features $F_{\text{loc}}^{(s)}$ and semantic features $\hat{S}_s$ using \textbf{FastAxialStripSSM}, a gated finite-kernel directional strip operator:
-\begin{equation}
-  \text{StripSSM}(U, C) = U + g_h \odot \mathcal{K}_{7\times 1}(\mathcal{K}_{1\times 11}(U)) + g_v \odot \mathcal{K}_{1\times 7}(\mathcal{K}_{11\times 1}(U)) + g_d \odot \mathcal{K}_{3\times 3, d=3}(U),
+\begin{align}
+  \text{StripSSM}(U, C) &= U + g_h \odot \mathcal{K}_{7\times 1}(\mathcal{K}_{1\times 11}(U)) \nonumber \\
+  &\quad + g_v \odot \mathcal{K}_{1\times 7}(\mathcal{K}_{11\times 1}(U)) + g_d \odot \mathcal{K}_{3\times 3, d=3}(U),
   \label{eq:stripssm}
-\end{equation}
+\end{align}
 where $(g_h, g_v, g_d) = \sigma(\text{Conv}_{1\times 1}([U, C]))$ are input-conditioned directional gates and $\mathcal{K}$ denotes depthwise strip convolutions. In the top-down decoder ($P_4 \to P_3 \to P_2 \to P_1$), each \textbf{UncertaintyStripDecoderStage} computes from the coarser stage's logit $M_{s+1}^{\uparrow}$ three spatial priors: (i) foreground probability $A_{\text{fg}} = \sigma(M_{s+1}^{\uparrow})$, (ii) normalized Bernoulli boundary variance $U_s = 4 A_{\text{fg}}(1 - A_{\text{fg}}) \in [0,1]$ which peaks at $1.0$ along ambiguous borders ($A_{\text{fg}} = 0.5$), and (iii) an outer morphological ring halo $R_s = \text{clip}(\text{MaxPool}_{5\times 5}(A_{\text{fg}}) - A_{\text{fg}}, 0, 1)$, followed by A2BD Sobel-$L_1$ edge refinement.
 
 \subsection{Training Objective and Variant Configuration Matrix}
@@ -128,7 +129,7 @@ In Round~9 and Round~10 (`R9a`--`R9e`, `R10a`--`R10e`), all arms use the exact s
   &\quad + 0.25\sum_{j=2}^4 \frac{1}{3}\mathcal{L}_{\text{BCE+Dice}}^{\tilde{w}}(M_j, Y) + 0.35\,\mathbb{I}[\text{proto}]\,\mathcal{L}_{\text{proto}}(\pi_{\text{proto}}, Y_{25}),
   \label{eq:loss}
 \end{align}
-where $a = 100 \cdot \bar{Y}$ is the ground-truth lesion area percentage, $w_i = \text{clip}((3.0 / (a_i + 0.35))^{0.40}, 1.0, 2.4)$ is normalized per batch via $\tilde{w}_i = w_i / \bar{w}$, $\alpha_{\text{fp}}(a) = 0.45 + 0.15\sigma((a - 1.5)/0.5)$ and $\beta_{\text{fn}}(a) = 1 - \alpha_{\text{fp}}(a)$ adapt Tversky supervision by lesion area, and $\mathcal{L}_{\text{far}}(Z, Y) = \frac{1}{|\Omega|}\sum_x \sigma(Z_x) \cdot \frac{1}{4}\sum_{r \in \{4,8,14,20\}} (1 - \text{Dilate}_r(Y)_x)$ penalizes far-field false positives across all five arms. The auxiliary prototype supervision term $0.35\,\mathcal{L}_{\text{proto}} = 0.35(\mathcal{L}_{\text{BCE+Dice}}^{\tilde{w}}(\pi_{\text{proto}}, Y_{25}) + 0.25\mathcal{L}_{\text{Tversky}}^{\tilde{w},\alpha(a)}(\pi_{\text{proto}}, Y_{25}))$ is active whenever the architecture includes the prototype head ($\mathbb{I}[\text{proto}]=1$ in \texttt{R9c}, \texttt{R9e}, \texttt{R8c}, \texttt{R8e}; $\mathbb{I}[\text{proto}]=0$ in \texttt{R9a}, \texttt{R9b}, \texttt{R9d}, \texttt{R8a}, \texttt{R8b}, \texttt{R8d}). Specifically, the five Round~9 arms are configured as follows:
+where $a = 100 \cdot \bar{Y}$ is the ground-truth lesion area percentage, $w_i = \text{clip}((3.0 / (a_i + 0.35))^{0.40}, 1.0, 2.4)$ is normalized per batch via $\tilde{w}_i = w_i / \bar{w}$, $\alpha_{\text{fp}}(a) = 0.45 + 0.15\sigma((a - 1.5)/0.5)$ and $\beta_{\text{fn}}(a) = 1 - \alpha_{\text{fp}}(a)$ adapt Tversky supervision by lesion area, and $\mathcal{L}_{\text{far}}(Z, Y)$ averages $\sigma(Z_x)(1 - \text{Dilate}_r(Y)_x)$ across four dilation radii $r \in \{4,8,14,20\}\,\text{px}$ to penalize far-field false positives across all five arms. The auxiliary prototype supervision term $0.35\,\mathcal{L}_{\text{proto}}$ (applying $\mathcal{L}_{\text{BCE+Dice}}^{\tilde{w}} + 0.25\mathcal{L}_{\text{Tversky}}^{\tilde{w},\alpha(a)}$ to $\pi_{\text{proto}}$ vs.\ $Y_{25}$) is active whenever the architecture includes the prototype head ($\mathbb{I}[\text{proto}]=1$ in \texttt{R9c}, \texttt{R9e}, \texttt{R8c}, \texttt{R8e}; $\mathbb{I}[\text{proto}]=0$ in \texttt{R9a}, \texttt{R9b}, \texttt{R9d}, \texttt{R8a}, \texttt{R8b}, \texttt{R8d}). Specifically, the five Round~9 arms are configured as follows:
 \begin{itemize}
   \item \textbf{\texttt{R9a} (Single-Stream Baseline, run \texttt{f328e771}, commit \texttt{e1379f6}):} ConvNeXt-Tiny + FPN decoder ($30.96\text{M}$ trainable / $30.96\text{M}$ total params), trained with Eq.~(\ref{eq:loss}) ($\mathbb{I}[\text{proto}]=0$).
   \item \textbf{\texttt{R9b} (Dual-Stream SafeConcat Control, run \texttt{e770b25c}, commit \texttt{946256c}):} ConvNeXt-Tiny + frozen DINOv2-Base with Freq-MoE Conv-LoRA + SafeConcat fusion + FPN decoder ($33.57\text{M}$ trainable / $120.15\text{M}$ total params, $\mathbb{I}[\text{proto}]=0$).
@@ -168,8 +169,7 @@ At $352\times 352$ resolution with threshold $0.5$ (\texttt{src/dang/metrics.py}
   \caption{\textbf{Few-Shot Clinical Stress Benchmarks ($S_1$ Track, Seed 42): Round~9 Zero-Shot Stem Protocol (\texttt{R9a}--\texttt{R9e}, $5\%$ Kvasir labels, $n=40$) and Round~8 Adverse-Trained Protocol (\texttt{R8a}--\texttt{R8e}, $10\%$ Kvasir labels, $n=80$).} All values match raw \texttt{SEED\_SUMMARY\_JSON} logs to two decimal places. Cohort sizes in R9 (and R8 where different): $S_1\times S_2$ $n=310$ ($315$), $S_1\times S_3$ $n=258$ ($272$), $S_1\to\text{PraNet-Ext}$ $n=696$, and $S_1\to\text{PolypGen-Dev}$ $n=258$ ($272$). Gain rows ($\Delta$ and $\Delta\%$) are computed directly from unrounded log summaries.}
   \label{tab:s1_stress}
   \vspace{2pt}
-  \footnotesize
-  \setlength{\tabcolsep}{3.2pt}
+  \resizebox{\textwidth}{!}{%
   \begin{tabular}{l cccc cccc cccc cccc}
     \toprule
     \multirow{2}{*}{\textbf{Model Variant}} & \multicolumn{4}{c}{\textbf{$S_1 \times S_2$: Tiny/Camo ($n=310/315$)}} & \multicolumn{4}{c}{\textbf{$S_1 \times S_3$: Adverse ($n=258/272$)}} & \multicolumn{4}{c}{\textbf{$S_1 \to$ PraNet-Ext ($n=696$)}} & \multicolumn{4}{c}{\textbf{$S_1 \to$ PolypGen-Dev ($n=258/272$)}} \\
@@ -193,7 +193,8 @@ At $352\times 352$ resolution with threshold $0.5$ (\texttt{src/dang/metrics.py}
     \textbf{\texttt{R8e}: DANG-Med v4 (Adv.-Trained Stem)} & \textbf{59.07} & \textbf{50.65} & \textbf{37.38} & \textbf{57.64} & \textbf{64.79} & \textbf{56.56} & \textbf{36.76} & \textbf{75.34} & \textbf{76.21} & \textbf{68.09} & \textbf{47.45} & 45.87 & \textbf{73.16} & \textbf{65.50} & \textbf{44.80} & 55.13 \\
     \textit{Rel. Change $\Delta\%$ (\texttt{R8e} vs. \texttt{R8a})} & +13.92\% & \textbf{+17.23\%} & \textbf{+77.85\%} & --7.56\% & \textbf{+38.46\%} & \textbf{+40.44\%} & \textbf{+76.51\%} & --4.85\% & +4.87\% & +5.90\% & \textbf{+30.18\%} & +1.33\% & +2.99\% & +4.95\% & \textbf{+33.03\%} & +1.47\% \\
     \bottomrule
-  \end{tabular}
+  \end{tabular}%
+  }
 \end{table*}
 
 \begin{table*}[t]
@@ -201,8 +202,7 @@ At $352\times 352$ resolution with threshold $0.5$ (\texttt{src/dang/metrics.py}
   \caption{\textbf{Full-Data Training ($n=800$ Kvasir images) evaluation across External OOD and Hard Clinical Stress Cohorts ($\text{ETIS-LaribPolypDB}$, $\text{PraNet-Ext Macro}$, $S_2$, $S_3$, Seed 42).} Every cell matches raw \texttt{SEED\_SUMMARY\_JSON} logs. Cohort sizes in R9 (and R8 where different): ETIS $n=196$, PraNet-Ext Macro $n=696$ ($4$ datasets), $S_2$ $n=310$ ($315$), and $S_3$ $n=258$ ($272$). We report trainable/total parameters and inference speed (FPS at batch size $4$, $352\times 352$, FP16 on NVIDIA T4).}
   \label{tab:full_ood}
   \vspace{2pt}
-  \footnotesize
-  \setlength{\tabcolsep}{2.9pt}
+  \resizebox{\textwidth}{!}{%
   \begin{tabular}{l cc cccc cccc cccc cccc}
     \toprule
     \multirow{2}{*}{\textbf{Model Variant}} & \multicolumn{2}{c}{\textbf{Efficiency}} & \multicolumn{4}{c}{\textbf{ETIS-LaribPolypDB ($n=196$)}} & \multicolumn{4}{c}{\textbf{PraNet-Ext Macro ($n=696$)}} & \multicolumn{4}{c}{\textbf{Stress $S_2$: Tiny/Camo ($310/315$)}} & \multicolumn{4}{c}{\textbf{Stress $S_3$: Adverse ($258/272$)}} \\
@@ -225,7 +225,8 @@ At $352\times 352$ resolution with threshold $0.5$ (\texttt{src/dang/metrics.py}
     \textbf{\texttt{R8e}: DANG-Med v4 (Adv.-Trained)} & 43.3/129.9M & 17.3 & \textbf{81.53} & \textbf{74.29} & \textbf{61.20} & 35.42 & \textbf{83.32} & \textbf{76.20} & 57.68 & 30.07 & \textbf{71.73} & \textbf{63.87} & \textbf{51.78} & \textbf{37.53} & \textbf{73.87} & \textbf{66.69} & \textbf{50.49} & 53.37 \\
     \textit{Rel. Change $\Delta\%$ (\texttt{R8e} vs. \texttt{R8a})} & -- & -- & \textbf{+20.58\%} & \textbf{+20.54\%} & \textbf{+21.08\%} & \textbf{--27.50\%} & +7.70\% & +7.71\% & +8.52\% & --11.48\% & +14.56\% & +14.21\% & +12.78\% & \textbf{--16.23\%} & \textbf{+26.31\%} & \textbf{+27.90\%} & \textbf{+31.52\%} & --13.90\% \\
     \bottomrule
-  \end{tabular}
+  \end{tabular}%
+  }
 \end{table*}
 
 \subsection{Performance on Label-Scarce and Compounding Stress Benchmarks ($S_1, S_1\times S_2, S_1\times S_3$)}
@@ -253,31 +254,30 @@ Table~\ref{tab:full_ood} and Figure~\ref{fig:bf1_hd95} compare all ten experimen
 
 \begin{table*}[t]
   \centering
-  \caption{\textbf{Multi-Seed Statistical Evaluation (\texttt{R9} Seed 42 + \texttt{R10a}--\texttt{R10e} Seeds 43--46): Mean $\pm$ Sample Standard Deviation across completed seeds.} Runs: Baseline (\texttt{f328e771}, \texttt{540e36c9}), SafeConcat (\texttt{e770b25c}, \texttt{85f4db55}), ProtoDPT+PASSE (\texttt{f676224f}, \texttt{c171badb}), and Flagship (\texttt{db1786be}, \texttt{01713a3a}, \texttt{7091cc66}). DANG-Med v4.1 substantially improves mean accuracy and boundary localization while compressing cross-seed variance on few-shot stress tracks by up to $10\times$.}
+  \caption{\textbf{Multi-Seed Statistical Evaluation (\texttt{R9} Seed 42 + \texttt{R10a}--\texttt{R10e} Seeds 43--46): Mean $\pm$ Sample Standard Deviation across completed seeds.} Runs: Baseline (\texttt{f328e771}, \texttt{540e36c9}; $n=5$ complete seeds 42--46), SafeConcat (\texttt{e770b25c}, \texttt{85f4db55}), ProtoDPT+PASSE (\texttt{f676224f}, \texttt{c171badb}), and Flagship (\texttt{db1786be}, \texttt{01713a3a}, \texttt{7091cc66}). DANG-Med v4.1 improves mean accuracy and boundary localization while compressing cross-seed variance on few-shot stress tracks.}
   \label{tab:multiseed}
   \vspace{2pt}
-  \footnotesize
-  \setlength{\tabcolsep}{4.0pt}
+  \resizebox{\textwidth}{!}{%
   \begin{tabular}{l c ccc ccc ccc cc}
     \toprule
-    \multirow{2}{*}{\textbf{Model Arm (R9 + R10 Suite)}} & \multirow{2}{*}{\textbf{Seeds}} & \multicolumn{3}{c}{\textbf{$S_1 \times S_2$: Tiny/Camo ($n=310$)}} & \multicolumn{3}{c}{\textbf{$S_1 \times S_3$: Adverse ($n=258$)}} & \multicolumn{3}{c}{\textbf{$S_1 \to$ PraNet-Ext ($n=696$)}} & \multicolumn{2}{c}{\textbf{Full Training ($n=800$)}} \\
+    \multirow{2}{*}{\textbf{Model Arm (R9 + R10 Suite)}} & \multirow{2}{*}{\textbf{Seeds ($S_1$ / Full)}} & \multicolumn{3}{c}{\textbf{$S_1 \times S_2$: Tiny/Camo ($n=310$)}} & \multicolumn{3}{c}{\textbf{$S_1 \times S_3$: Adverse ($n=258$)}} & \multicolumn{3}{c}{\textbf{$S_1 \to$ PraNet-Ext ($n=696$)}} & \multicolumn{2}{c}{\textbf{Full Training ($n=800$)}} \\
     \cmidrule(lr){3-5} \cmidrule(lr){6-8} \cmidrule(lr){9-11} \cmidrule(lr){12-13}
     & & mDice$\uparrow$ & BF1$\uparrow$ & HD95$\downarrow$ & mDice$\uparrow$ & BF1$\uparrow$ & HD95$\downarrow$ & mDice$\uparrow$ & BF1$\uparrow$ & HD95$\downarrow$ & ETIS Dice$\uparrow$ & PraNet Dice$\uparrow$ \\
     \midrule
-    \texttt{R9a+R10a}: ConvNeXt-T + FPN Baseline & $n=5$ (42--46) & $44.74 \pm 3.79$ & $16.22 \pm 3.87$ & $72.76 \pm 8.85$ & $45.58 \pm 4.01$ & $15.23 \pm 1.97$ & $87.18 \pm 1.61$ & $66.60 \pm 3.84$ & $28.45 \pm 4.82$ & $58.76 \pm 14.41$ & $72.35 \pm 3.05^\dagger$ & $78.55 \pm 1.76^\dagger$ \\
-    \texttt{R9b+R10b}: Dual-Stream SafeConcat + FPN & $n=3$ (42--44) & $45.28 \pm 0.89$ & $15.10 \pm 2.04$ & $77.26 \pm 6.96$ & $46.45 \pm 1.83$ & $15.31 \pm 0.72$ & $87.80 \pm 4.50$ & $66.50 \pm 0.76$ & $26.65 \pm 3.20$ & $68.63 \pm 8.19$ & $72.85 \pm 4.22$ & $79.62 \pm 1.23$ \\
-    \texttt{R9c+R10c}: DANG-v4.1 (ProtoDPT+PASSE) & $n=2$ (42--43) & $49.58 \pm 1.85$ & $27.26 \pm 2.05$ & $\textbf{65.06} \pm \textbf{0.49}$ & $\textbf{57.34} \pm \textbf{3.13}$ & $26.27 \pm 0.16$ & $\textbf{70.95} \pm \textbf{3.95}$ & $71.42 \pm 0.58$ & $40.43 \pm 1.85$ & $49.25 \pm 1.16$ & $77.69 \pm 0.30$ & $81.86 \pm 0.66$ \\
-    \textbf{\texttt{R9e+R10d/e}: DANG-Med v4.1 Flagship} & $n=3$ (42,43,45) & $\textbf{49.81} \pm \textbf{0.24}$ & $\textbf{30.85} \pm \textbf{1.52}$ & $65.72 \pm 1.43$ & $56.13 \pm 1.53$ & $\textbf{27.56} \pm \textbf{1.54}$ & $77.40 \pm 0.86$ & $\textbf{71.95} \pm \textbf{0.35}$ & $\textbf{42.76} \pm \textbf{1.34}$ & $\textbf{48.45} \pm \textbf{1.90}$ & $\textbf{79.72} \pm \textbf{1.50}^\ddagger$ & $\textbf{81.88} \pm \textbf{1.09}^\ddagger$ \\
+    \texttt{R9a+R10a}: ConvNeXt-T + FPN Baseline & $5 / 5$ (42--46) & $44.74 \pm 3.79$ & $16.22 \pm 3.87$ & $72.76 \pm 8.85$ & $45.58 \pm 4.01$ & $15.23 \pm 1.97$ & $87.18 \pm 1.61$ & $66.60 \pm 3.84$ & $28.45 \pm 4.82$ & $58.76 \pm 14.41$ & $72.55 \pm 2.68$ & $78.66 \pm 1.55$ \\
+    \texttt{R9b+R10b}: Dual-Stream SafeConcat + FPN & $4 / 3$ (42--45) & $44.99 \pm 0.92$ & $16.06 \pm 2.54$ & $76.01 \pm 6.21$ & $46.84 \pm 1.68$ & $16.10 \pm 1.68$ & $86.61 \pm 4.37$ & $66.89 \pm 1.00$ & $28.41 \pm 4.40$ & $64.80 \pm 10.16$ & $72.85 \pm 4.22$ & $79.62 \pm 1.23$ \\
+    \texttt{R9c+R10c}: DANG-v4.1 (ProtoDPT+PASSE) & $3 / 2$ (42--44) & $49.70 \pm 1.32$ & $27.71 \pm 1.65$ & $66.93 \pm 3.26$ & $\textbf{56.86} \pm \textbf{2.36}$ & $25.55 \pm 1.27$ & $\textbf{71.89} \pm \textbf{3.23}$ & $71.38 \pm 0.42$ & $40.43 \pm 1.31$ & $49.80 \pm 1.25$ & $77.69 \pm 0.30$ & $81.86 \pm 0.66$ \\
+    \textbf{\texttt{R9e+R10d/e}: DANG-Med v4.1 Flagship} & $4 / 2$ (42--45) & $\textbf{50.65} \pm \textbf{1.69}$ & $\textbf{30.84} \pm \textbf{1.24}$ & $\textbf{65.13} \pm \textbf{1.66}$ & $55.96 \pm 1.30$ & $\textbf{27.75} \pm \textbf{1.32}$ & $77.57 \pm 0.78$ & $\textbf{71.97} \pm \textbf{0.29}$ & $\textbf{42.81} \pm \textbf{1.10}$ & $\textbf{48.48} \pm \textbf{1.55}$ & $\textbf{79.72} \pm \textbf{1.50}$ & $\textbf{81.88} \pm \textbf{1.09}$ \\
     \midrule
-    \textbf{Multi-Seed Mean Gain (Flagship vs. Baseline)} & -- & \textbf{+5.07 pp} & \textbf{+14.63 pp} & \textbf{--7.04 px} & \textbf{+10.55 pp} & \textbf{+12.33 pp} & \textbf{--9.78 px} & \textbf{+5.35 pp} & \textbf{+14.31 pp} & \textbf{--10.31 px} & \textbf{+7.37 pp} & \textbf{+3.33 pp} \\
-    \textit{Relative Multi-Seed Mean Gain ($\Delta\%$)} & -- & +11.33\% & \textbf{+90.20\%} & --9.68\% & \textbf{+23.15\%} & \textbf{+80.96\%} & --11.22\% & +8.03\% & \textbf{+50.30\%} & \textbf{--17.55\%} & \textbf{+10.19\%} & +4.24\% \\
+    \textbf{Multi-Seed Mean Gain (Flagship vs. Baseline)} & -- & \textbf{+5.91 pp} & \textbf{+14.62 pp} & \textbf{--7.63 px} & \textbf{+10.38 pp} & \textbf{+12.52 pp} & \textbf{--9.61 px} & \textbf{+5.37 pp} & \textbf{+14.36 pp} & \textbf{--10.28 px} & \textbf{+7.17 pp} & \textbf{+3.22 pp} \\
+    \textit{Relative Multi-Seed Mean Gain ($\Delta\%$)} & -- & \textbf{+13.21\%} & \textbf{+90.14\%} & --10.49\% & \textbf{+22.77\%} & \textbf{+82.21\%} & --11.02\% & +8.06\% & \textbf{+50.47\%} & \textbf{--17.49\%} & +9.88\% & +4.09\% \\
     \bottomrule
-    \multicolumn{13}{l}{\scriptsize $^\dagger$Full-training Baseline evaluated over $n=4$ completed seeds (42--45); $^\ddagger$Full-training Flagship evaluated over $n=2$ completed seeds (42--43) at snapshot time while remaining R10 seeds complete.}
-  \end{tabular}
+  \end{tabular}%
+  }
 \end{table*}
 
 \subsection{Multi-Seed Stability Analysis (\texttt{R10a}--\texttt{R10e})}
-Table~\ref{tab:multiseed} summarizes the multi-seed replication suite across Seeds 42--46. While the single-stream ConvNeXt-Tiny+FPN baseline exhibits high sensitivity to random initialization under $5\%$ few-shot training ($S_1\times S_2$ mDice ranging from $39.00\%$ on Seed~42 to $48.49\%$ on Seed~43, SD $= 3.79\%$; $S_1\to\text{PraNet-Ext}$ HD95 SD $= 14.41\,\text{px}$), \textbf{DANG-Med v4.1 Flagship} locks onto a highly stable solution across seeds: on $S_1\times S_2$, mDice is $49.80\%$ (Seed~42), $50.06\%$ (Seed~43), and $49.58\%$ (Seed~45), yielding $49.81 \pm 0.24\%$ mDice and $30.85 \pm 1.52\%$ Boundary F1 (\textbf{$+90.20\%$ relative BF1 improvement} over the 5-seed baseline mean $16.22 \pm 3.87\%$). On $S_1\times S_3$ zero-shot adverse endoscopy, Flagship achieves $56.13 \pm 1.53\%$ mDice (\textbf{$+10.55$~pp / $+23.15\%$ relative} over the 5-seed baseline mean $45.58 \pm 4.01\%$) and $27.56 \pm 1.54\%$ BF1 (\textbf{$+80.96\%$ relative}). On full-data training, Flagship reaches $79.72 \pm 1.50\%$ mDice on ETIS-LaribPolypDB (\textbf{$+7.37$~pp} over the 4-seed baseline mean $72.35 \pm 3.05\%$) and reduces PraNet-External HD95 from $34.44 \pm 1.34\,\text{px}$ to $29.31 \pm 1.16\,\text{px}$.
+Table~\ref{tab:multiseed} summarizes the multi-seed replication suite across Seeds 42--46. While the single-stream ConvNeXt-Tiny+FPN baseline exhibits high sensitivity to random initialization under $5\%$ few-shot training ($S_1\times S_2$ mDice ranging from $39.00\%$ on Seed~42 to $48.49\%$ on Seed~43, SD $= 3.79\%$; $S_1\to\text{PraNet-Ext}$ HD95 SD $= 14.41\,\text{px}$ across $n=5$ seeds), \textbf{DANG-Med v4.1 Flagship} achieves consistent accuracy across all $n=4$ completed $S_1$ seeds (Seeds 42, 43, 44, 45): on $S_1\times S_2$, mDice reaches $50.65 \pm 1.69\%$ (\textbf{$+5.91$~pp / $+13.21\%$ relative} over the 5-seed baseline mean $44.74 \pm 3.79\%$), mIoU reaches $43.90 \pm 1.36\%$ (\textbf{$+19.26\%$ relative} over $36.81 \pm 3.87\%$), and Boundary F1 reaches $30.84 \pm 1.24\%$ (\textbf{$+90.14\%$ relative} over $16.22 \pm 3.87\%$). On $S_1\times S_3$ zero-shot adverse endoscopy, Flagship achieves $55.96 \pm 1.30\%$ mDice (\textbf{$+10.38$~pp / $+22.77\%$ relative} over the 5-seed baseline mean $45.58 \pm 4.01\%$) and $27.75 \pm 1.32\%$ BF1 (\textbf{$+82.21\%$ relative}). On full-data training, Flagship reaches $79.72 \pm 1.50\%$ mDice on ETIS-LaribPolypDB (\textbf{$+7.17$~pp} over the 5-seed baseline mean $72.55 \pm 2.68\%$) and reduces PraNet-External HD95 from $35.13 \pm 1.92\,\text{px}$ to $29.31 \pm 1.16\,\text{px}$ ($-16.57\%$ relative).
 
 \section{Limitations, Ethical Compliance, and Reproducibility}
 To ensure transparent scientific reporting in accordance with IEEE Access standards, we explicitly note five methodological limitations and scope conditions identified during our cross-harness audit:
