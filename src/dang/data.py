@@ -541,7 +541,7 @@ def prepare_all_cohorts() -> dict:
     assert len(val_samples) == 95, f"Expected 95 val samples, got {len(val_samples)}"
     assert len(id_test_samples) == 90, f"Expected 90 id_test samples, got {len(id_test_samples)}"
     assert len(ood_dev_samples) == 258, f"Expected 258 PolypGen-Dev samples, got {len(ood_dev_samples)}"
-    assert len(ood_ext_samples) == 967, f"Expected 967 PolypGen-Extended samples, got {len(ood_ext_samples)}"
+    assert len(ood_ext_samples) == 974, f"Expected 974 PolypGen-Extended samples, got {len(ood_ext_samples)}"
 
     uid_lookup = {}
     for s in (
