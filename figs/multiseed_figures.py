@@ -27,19 +27,19 @@ T95_DF4 = 2.776  # two-sided 95% t critical value, df = 4 (5 paired seeds)
 BLUES = family("blue", 2)
 ARMS = [
     ("baseline", "ConvNeXt-T + FPN baseline", MUTED),
-    ("safeconcat", "Dual-stream concatenation control", PALETTE["orange"]),
+    ("safeconcat", "Concatenation control", PALETTE["orange"]),
     ("protodpt_passe", "DANG without stem", BLUES[0]),
-    ("flagship", "DANG (full)", BLUES[1]),
+    ("flagship", "DANG", BLUES[1]),
 ]
 # darker companions for the mean bar and interval, so light fills stay legible
 DARK = ["#6E6E6E", "#B07800", "#3C8FC0", "#004F7C"]
 COHORTS = [
-    ("s1s2", "S1×S2 tiny/camo"),
-    ("s1s3", "S1×S3 adverse"),
-    ("s1pra", "S1→PraNet external"),
-    ("full_etis", "Full→ETIS (n=196)"),
-    ("full_s2", "Full→S2 tiny/camo"),
-    ("full_s3", "Full→S3 adverse"),
+    ("s1s2", "40 → tiny/camouflaged"),
+    ("s1s3", "40 → adverse"),
+    ("s1pra", "40 → PraNet-Ext"),
+    ("full_etis", "800 → ETIS"),
+    ("full_s2", "800 → tiny/camouflaged"),
+    ("full_s3", "800 → adverse"),
 ]
 
 
@@ -93,19 +93,19 @@ def benchmarks():
 
 
 DELTA_ROWS = [
-    ("s1s2_dice", "S1×S2 tiny/camo"),
-    ("s1s3_dice", "S1×S3 adverse (all)"),
-    ("s1s3_Adverse_NBI_Spectral", "S1×S3 · NBI spectral"),
-    ("s1s3_Adverse_LowLight_Lumen", "S1×S3 · low-light lumen"),
-    ("s1s3_Adverse_Specular_Glare_Blur", "S1×S3 · glare + blur"),
-    ("s1s3_Adverse_Combined_Severe", "S1×S3 · combined severe"),
-    ("s1pra_dice", "S1→PraNet external"),
-    ("s1pgdev_dice", "S1→PolypGen-Dev"),
-    ("full_etis_dice", "Full→ETIS-Larib"),
-    ("full_pra_dice", "Full→PraNet external"),
-    ("full_pgext_sd_micro_dice", "Full→PolypGen-Ext (seq.-disj.)"),
-    ("full_s2_dice", "Full→S2 tiny/camo"),
-    ("full_s3_dice", "Full→S3 adverse"),
+    ("s1s2_dice", "40 → tiny/camouflaged"),
+    ("s1s3_dice", "40 → adverse (all)"),
+    ("s1s3_Adverse_NBI_Spectral", "40 → adverse · NBI"),
+    ("s1s3_Adverse_LowLight_Lumen", "40 → adverse · low light"),
+    ("s1s3_Adverse_Specular_Glare_Blur", "40 → adverse · glare + blur"),
+    ("s1s3_Adverse_Combined_Severe", "40 → adverse · combined"),
+    ("s1pra_dice", "40 → PraNet-Ext"),
+    ("s1pgdev_dice", "40 → PolypGen-Dev"),
+    ("full_etis_dice", "800 → ETIS"),
+    ("full_pra_dice", "800 → PraNet-Ext"),
+    ("full_pgext_sd_micro_dice", "800 → PolypGen-Ext-SD"),
+    ("full_s2_dice", "800 → tiny/camouflaged"),
+    ("full_s3_dice", "800 → adverse"),
 ]
 
 
@@ -123,7 +123,7 @@ def deltas():
     y = np.arange(n)[::-1].astype(float)
     split = next(i for i, (k, _) in enumerate(DELTA_ROWS) if k.startswith("full"))
     comps_a = [("protodpt_passe", "DANG without stem", BLUES[0], 0.16),
-               ("flagship", "DANG (full)", BLUES[1], -0.16)]
+               ("flagship", "DANG", BLUES[1], -0.16)]
     for ax in axes:
         for i in range(n):  # zebra rows
             if i % 2 == 0:
@@ -152,7 +152,7 @@ def deltas():
         axes[1].plot([m], [yi], "o", ms=3.6, color=color, mec="white", mew=0.5, zorder=4)
         axes[1].text(xmax + 0.3, yi, f"{m:+.2f}", va="center", ha="left", fontsize=6, color=color,
                      fontweight="bold" if hit else "normal")
-    axes[1].set_xlabel("Paired Δ mDice, full − no-stem (pp)")
+    axes[1].set_xlabel("Paired Δ mDice, DANG − DANG without stem (pp)")
     axes[1].set_xlim(-8.0, xmax)
     axes[1].text(xmax + 0.3, y[0] + 0.75, "mean", va="bottom", ha="left", fontsize=6, color="#555555")
     for ax, left, right in [(axes[0], "← worse than baseline", "better than baseline →"),

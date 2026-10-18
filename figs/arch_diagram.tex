@@ -27,6 +27,7 @@
   },
   ours/.style={block, draw=orxblue, fill=orxblue!9, line width=0.75pt},
   frozenblk/.style={block, draw=black!35, fill=black!6},
+  minor/.style={block, draw=black!40, densely dashed, fill=white, text=black!60},
   encoder/.style={
     draw=black!50, fill=white, trapezium, shape border rotate=270,
     trapezium left angle=72, trapezium right angle=72, trapezium stretches body,
@@ -48,23 +49,23 @@
   % ---------------- input and stem
   \node[img] (input) {\includegraphics[width=12.5mm]{arch_input.png}};
   \node[sub, below=0.6mm of input] (inlbl) {$I\in\mathbb{R}^{3\times352^2}$};
-  \node[ours, right=3.5mm of input, text width=13.5mm] (stem) {Retinex\\chromatic\\stem};
+  \node[minor, right=3.5mm of input, text width=13.5mm] (stem) {Retinex\\chromatic\\stem};
 
   % ---------------- two encoder streams
   \coordinate[right=4mm of stem] (split);
   \node[block, anchor=west, text width=20mm] (cnn) at ($(split)+(1.5mm,17.5mm)$)
        {ConvNeXt-T\\[-0.5pt]{\scriptsize stages $s_4$--$s_{32}$}};
   \node[frozenblk, anchor=west, text width=20mm] (vit) at ($(split)+(1.5mm,-17.5mm)$)
-       {DINOv2-B \frozen\\[-0.5pt]{\scriptsize Freq-MoE LoRA}};
+       {DINOv2-B \frozen\\[-0.5pt]{\scriptsize + LoRA adapters}};
 
-  \node[ours, right=5mm of cnn, text width=18mm] (calib) {DINO style\\calibration\\[-0.5pt]{\scriptsize at $s_4,s_8$}};
-  \node[ours, right=5mm of vit, text width=18mm] (dpt) {4-scale DPT\\reassembler};
+  \node[minor, right=5mm of cnn, text width=18mm] (calib) {DINO style\\calibration\\[-0.5pt]{\scriptsize at $s_4,s_8$}};
+  \node[block, right=5mm of vit, text width=18mm] (dpt) {4-scale DPT\\reassembler};
 
   % ---------------- fusion, decoder, output (middle row)
   \path (calib.east) -- (dpt.east) coordinate[pos=0.5] (mid);
-  \node[ours, right=7.5mm of mid, text width=18mm] (fuse) {Strip GD-SSA\\fusion\\[-0.5pt]{\scriptsize at $s_8,s_{16},s_{32}$}};
-  \node[ours, right=8.5mm of fuse, text width=20mm] (dec) {Uncertainty\\strip decoder\\[-0.5pt]{\scriptsize $U{=}4p(1{-}p)$}};
-  \node[sumnode, right=4.5mm of dec] (sum) {$+$};
+  \node[ours, right=7.5mm of mid, text width=18mm] (fuse) {Strip\\fusion\\[-0.5pt]{\scriptsize at $s_8,s_{16},s_{32}$}};
+  \node[ours, right=8.5mm of fuse, text width=20mm] (dec) {Uncertainty\\strip decoder\\[-0.5pt]{\scriptsize $u{=}4p(1{-}p)$}};
+  \node[sumnode, right=4.5mm of dec] (sum) {$\odot$};
   \node[img, right=3.5mm of sum] (out) {\includegraphics[width=12.5mm]{arch_output.png}};
   \node[sub, below=0.6mm of out] {$\hat Y=\sigma(Z)$};
 
@@ -85,10 +86,10 @@
   \draw[flow] (fuse) -- (dec);
   \draw[flow] (dpt) -- (proto);
   \draw[flow] (proto) -- node[edgelbl, above] {$\pi_{\mathrm{proto}}$} (passe);
-  \draw[flow] ($(passe.north)+(-3mm,0)$) -- node[edgelbl, left, align=right] {$\mathcal{E}_{\mathrm{env}},P_{\mathrm{sem}}$\\[-1pt]{\sffamily at stride 4}} ($(dec.south)+(-3mm,0)$);
-  \draw[flow] ($(dec.south)+(3mm,0)$) -- node[edgelbl, right] {$M_4$} ($(passe.north)+(3mm,0)$);
-  \draw[flow] (dec) -- node[edgelbl, above] {$0.8$} (sum);
-  \draw[flow] (proto.south) -- ++(0,-3mm) -| node[edgelbl, pos=0.3, below] {$0.2\,\pi_{\mathrm{proto}}^{\uparrow352}$} (sum.south);
+  \draw[flow] (dec.south) -- node[edgelbl, right] {$M_4$} (passe.north);
+  \draw[flow] (dec) -- node[edgelbl, above] {$Z_{\mathrm{dec}}$} (sum);
+  \draw[flow] ($(proto.north east)+(-2mm,0)$) -- node[edgelbl, pos=0.62, left] {$0.2\,\pi_{\mathrm{proto}}$} ($(dec.south west)+(2.5mm,0)$);
+  \draw[flow] (passe.east) -| node[edgelbl, pos=0.25, below] {$\mathcal{E},P_{\mathrm{sem}}$} (sum.south);
   \draw[flow] (sum) -- (out);
 
   % ---------------- lanes and legend
@@ -101,6 +102,7 @@
 
   \node[anchor=south east, font=\sffamily\scriptsize, text=black!65, inner sep=0pt] (legend) at ($(out.east |- local.north)+(0,0.6mm)$)
     {\tikz[baseline=-0.6ex]\node[ours, minimum height=2mm, text width=2.5mm, inner sep=0pt]{};~proposed
+     \quad\tikz[baseline=-0.6ex]\node[minor, minimum height=2mm, text width=2.5mm, inner sep=0pt]{};~no measurable gain
      \quad\frozen~frozen
      \quad\tikz[baseline=-0.6ex]\draw[cond] (0,0) -- (5mm,0);~conditioning};
 

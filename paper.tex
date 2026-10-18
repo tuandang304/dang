@@ -18,196 +18,228 @@
   OpenResearch Medical Vision Group \\
   \texttt{Department of Biomedical Engineering \& Computer Vision}
 }
-\date{\today}
+\date{}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-Polyp segmentation networks that reach $\sim 93\%$ mean Dice (mDice) in domain still fail where it matters clinically: when only a few frames are labelled, on tiny or flat low-contrast lesions, and under acquisition shifts such as narrow-band imaging (NBI), low light, glare and blur. We present \textbf{DANG}, a dual-stream network that pairs a trainable ConvNeXt-Tiny with a frozen DINOv2-Base and uses the foundation features through three components: a dual-prototype margin head on multi-depth DINOv2 tokens, a prototype-anchored spatial support envelope (PASSE) that suppresses far-field false positives, and an uncertainty-guided directional strip decoder. We train on Kvasir-SEG only and test on deduplicated external cohorts and two diagnostic stress slices over five paired seeds, retraining PraNet, Polyp-PVT and EMCAD under the same protocol. With $40$ labelled images DANG reaches $51.0\%$ mDice on tiny/camouflaged lesions and $55.8\%$ on synthetic adverse endoscopy, ahead of every retrained model by $7$--$27$~pp, and its Boundary F1 exceeds theirs by $5$--$34$~pp. A control that adds the same frozen DINOv2 by plain concatenation gains nothing in this regime, so the improvement comes from how the foundation features are used, not from the extra parameters. With $800$ labelled images DANG beats PraNet but is statistically tied with Polyp-PVT and EMCAD. On the standard PraNet training split it matches a faithful Polyp-PVT reproduction on four test sets and exceeds it on ETIS-LaribPolypDB ($84.4\%$ vs.\ $78.9\%$). These gains cost efficiency: DANG has $130$M parameters ($43$M trainable) and runs at $17$~FPS on a T4, against $25$--$31$M parameters and $37$--$42$~FPS for the retrained models.
+Polyp segmentation networks that reach $\sim 93\%$ mean Dice (mDice) in domain degrade when only a few frames are labelled, on tiny or low-contrast lesions, and under acquisition shift. We present \textbf{DANG}, which pairs a trainable ConvNeXt-Tiny with a frozen DINOv2-Base and uses the foundation features through a dual-prototype margin head, a prototype-anchored spatial support envelope (PASSE) that suppresses distant false positives, and an uncertainty-guided strip decoder. We train on $40$ or $800$ Kvasir-SEG images and test on deduplicated external and stress cohorts over five paired seeds, retraining PraNet, Polyp-PVT and EMCAD under the same protocol. With $40$ labels DANG leads every retrained model on all external evaluations, by at least $7.1$ percentage points (pp) mDice and $4.8$~pp Boundary F1; most of these gains survive Holm correction. A control that adds the same frozen DINOv2 by concatenation stays at baseline level, so the frozen features alone do not explain the gain. With $800$ labels DANG is statistically tied with Polyp-PVT and EMCAD. On the standard $1{,}450$-image training split it matches a faithful Polyp-PVT reproduction on four test sets and exceeds it on ETIS-LaribPolypDB ($84.4\%$ vs.\ $78.9\%$; three seeds, uncorrected). DANG is $2$--$2.5\times$ slower than the retrained models ($17$~FPS on a T4).
 \end{abstract}
 
 \section{Introduction}
-Colorectal cancer remains a leading cause of cancer death, and detecting and resecting polyps during colonoscopy reduces its incidence~\citep{jha2020kvasir,ali2023polypgen}. Pixel-level polyp segmentation supports this by delineating lesion margins. Its benchmarks, however, are close to saturation in domain: a ConvNeXt-Tiny~\citep{liu2022convnet} with a Feature Pyramid Network~\citep{lin2017fpn} already reaches about $93\%$ mDice on Kvasir-SEG~\citep{jha2020kvasir}, and architectural changes move this number by less than one point. In-domain scores therefore say little about whether a model is more robust.
+Colorectal cancer is the third most common cancer and the second leading cause of cancer death worldwide~\citep{sung2021globocan}, and removing adenomatous polyps during colonoscopy lowers colorectal-cancer mortality~\citep{zauber2012polypectomy}. Pixel-level polyp segmentation supports this by delineating lesion margins. On the in-domain benchmark Kvasir-SEG~\citep{jha2020kvasir}, however, a plain ConvNeXt-Tiny~\citep{liu2022convnet} with a Feature Pyramid Network~\citep{lin2017fpn} already reaches about $93\%$ mDice, and in our experiments the proposed model and this baseline differ by $0.03$~pp in domain (Section~\ref{sec:ablation}). In-domain scores therefore say little about robustness.
 
 Deployment stresses a model along three axes that in-domain benchmarks do not exercise:
 \begin{enumerate}
-  \item \textbf{Few labels ($S_1$).} Pixel-accurate contours require expert time, so a new centre may label only tens of frames. Trained on $40$ images, CNNs overfit to source textures and their boundaries degrade on external centres.
-  \item \textbf{Tiny and camouflaged lesions ($S_2$).} Flat or diminutive polyps covering under $1.5\%$ of the frame, or with low contrast to the surrounding mucosa, are fragmented or missed by stride-$16/32$ features, especially on ETIS-LaribPolypDB~\citep{silva2014toward} and CVC-ColonDB~\citep{tajbakhsh2015automated}.
-  \item \textbf{Acquisition shift ($S_3$).} Procedures switch between white-light and NBI-like spectra and suffer illumination fall-off, sensor noise, specular glare and motion blur.
+  \item \textbf{Scarce labels.} Pixel-accurate contours require expert time, so a new centre may label only tens of frames. Trained on $40$ images, CNNs overfit to source textures and their boundaries degrade on external centres.
+  \item \textbf{Tiny and camouflaged lesions.} Flat or diminutive polyps covering under $1.5\%$ of the frame, or with low contrast to the surrounding mucosa, are fragmented or missed by stride-$16/32$ features, especially on ETIS-LaribPolypDB~\citep{silva2014toward} and CVC-ColonDB~\citep{tajbakhsh2015automated}.
+  \item \textbf{Acquisition shift.} Procedures switch between white-light and NBI-like spectra and suffer illumination fall-off, sensor noise, specular glare and motion blur.
 \end{enumerate}
 
 \begin{figure*}[!t]
   \centering
   \includegraphics[width=\linewidth]{figs/arch_diagram.pdf}
-  \caption{\textbf{DANG fuses a trainable CNN stream with a frozen foundation-model stream and gates the decoder with a prototype-derived support envelope.} A $352\times352$ frame passes through a Retinex chromatic stem and splits into a ConvNeXt-Tiny local stream and a frozen DINOv2-Base semantic stream with low-rank adapters on its last four blocks. Tokens from four depths are reassembled by a 4-scale DPT; the global DINOv2 vector $g_{\text{dino}}$ (dashed) conditions style calibration at strides $4$ and $8$. Strip fusion aligns the streams at strides $8$--$32$, the dual-prototype head produces the margin map $\pi_{\text{proto}}$, and PASSE combines it with the coarsest decoder logit $M_4$ into a support envelope that modulates the stride-$4$ decoder logit; the final logit adds $0.2\,\pi_{\text{proto}}$ (Eq.~\ref{eq:passe_mod}). Blue boxes are the proposed components. The thumbnails are a Kvasir test frame and its ground-truth mask, shown for illustration only.}
+  \caption{\textbf{DANG fuses a trainable CNN stream with a frozen foundation-model stream and gates the output with a prototype-derived support envelope.} A $352\times352$ frame splits into a ConvNeXt-Tiny local stream and a frozen DINOv2-Base semantic stream with low-rank adapters. Tokens from four depths are reassembled at four scales; strip fusion aligns the two streams at strides $8$--$32$; the dual-prototype head produces the margin map $\pi_{\text{proto}}$, which enters the decoder output $Z_{\text{dec}}$ with weight $0.2$; PASSE combines $\pi_{\text{proto}}$ with the coarsest decoder logit $M_4$ into an envelope $\mathcal{E}$ and core map $P_{\text{sem}}$ that modulate $Z_{\text{dec}}$ (Eq.~\ref{eq:passe_mod}). Blue boxes are the proposed components; the dashed Retinex stem and style calibration are part of the evaluated model but show no measurable gain (Section~\ref{sec:ablation}). Thumbnails: a Kvasir test frame and its ground-truth mask, for illustration only.}
   \label{fig:arch}
 \end{figure*}
-
-Vision foundation models such as DINOv2~\citep{oquab2024dinov2} and SAM~\citep{kirillov2023segment} provide features that transfer across domains, but their $14$-pixel patch grid is too coarse for lesion boundaries. Concatenating such features with a CNN is the obvious remedy; we show that it does not help when labels are scarce.
-
-We present \textbf{DANG} (Figure~\ref{fig:arch}) and make four contributions:
-\begin{itemize}
-  \item \textbf{A deduplicated multi-centre stress benchmark.} Perceptual-hash and MD5 deduplication across Kvasir-SEG, six-centre PolypGen~\citep{ali2023polypgen} and the four PraNet external sets~\citep{fan2020pranet}, with a $40$-image few-shot track and two stress slices: natural tiny/camouflaged lesions and synthetic adverse acquisitions (Figure~\ref{fig:examples}).
-  \item \textbf{Prototype-anchored use of foundation features.} Multi-depth DINOv2 tokens feed a dual-prototype margin head with test-time self-support, and the \textbf{prototype-anchored spatial support envelope (PASSE)} turns this margin into a mask that suppresses false positives far from the lesion and reinforces low-contrast lesion cores.
-  \item \textbf{An uncertainty-guided strip decoder.} Fused horizontal, vertical and dilated depthwise strips, gated by the Bernoulli boundary variance $4p(1-p)$, refine boundaries where the coarser prediction is ambiguous.
-  \item \textbf{A controlled five-seed evaluation against retrained state of the art.} PraNet~\citep{fan2020pranet}, Polyp-PVT~\citep{dong2021polyp} and EMCAD~\citep{rahman2024emcad} are retrained under our protocol, a concatenation control isolates the effect of the foundation features, and a standard-split experiment ties our protocol to published numbers. We report where DANG does not win, including the full-data regime and inference cost, and that its Retinex stem does not contribute.
-\end{itemize}
-
-\section{Related Work}
-\paragraph{Polyp segmentation.} Architectures progressed from U-Net~\citep{ronneberger2015unet} and UNet++~\citep{zhou2018unetplusplus} to reverse-attention networks: PraNet~\citep{fan2020pranet} mines boundary cues with parallel partial decoders and reverse attention, and CaraNet~\citep{lou2022caranet} adds axial context for small objects. Transformer encoders improved multi-centre generalisation in Polyp-PVT~\citep{dong2021polyp} and TransFuse~\citep{zhang2021transfuse}, and EMCAD~\citep{rahman2024emcad} pairs a PVTv2 encoder with an efficient multi-scale convolutional attention decoder.
-
-\paragraph{Foundation models for polyps.} SAM-Mamba~\citep{dutta2024sammamba} and SAM-MaGuP~\citep{dutta2025sammagup} adapt SAM with Mamba-based priors and report strong zero-shot generalisation, at about $103$M parameters and $423$~GFLOPs~\citep{agnihotri2026litebound}. A second line distils foundation models into small networks: Polyp-DiFoM~\citep{agnihotri2025difom} distils SAM and DINOv2 into lightweight baselines, LiteBounD~\citep{agnihotri2026litebound} adds boundary-guided frequency-aware distillation, and Lite-$\pi$~\citep{agnihotri2026litepi} aligns foundation-model-specific prototypes with a lightweight network for real-time inference. DANG keeps the foundation model at inference and studies how to use its features when labels are scarce; it is complementary to distillation, which could compress it.
-
-\paragraph{Adapting foundation models and directional operators.} Parameter-efficient fine-tuning such as LoRA~\citep{hu2022lora} and dense-prediction heads such as DPT~\citep{ranftl2021vision} adapt frozen ViTs to segmentation. State-space models (Mamba~\citep{gu2023mamba}, VMamba~\citep{liu2024vmamba}, U-Mamba~\citep{ma2024umamba}) capture long-range context with directional scans; our strip decoder approximates directional context with fused depthwise strip convolutions instead.
-
-\section{Method}
-DANG maps an RGB frame $I\in\mathbb{R}^{3\times352\times352}$ to a polyp probability map $\hat Y=\sigma(Z)$ (Figure~\ref{fig:arch}).
-
-\subsection{Two streams}
-\label{sec:stem}
-The local stream is ConvNeXt-Tiny, producing features $F_{\text{loc}}^{(s)}$ at strides $s\in\{4,8,16,32\}$. The semantic stream is DINOv2-Base, frozen, with rank-$4$ convolutional LoRA adapters on its last four blocks that route low- and high-frequency token components to experts with dilations $1$--$3$. A Retinex chromatic stem~\citep{land1971lightness} removes specular highlights and divides out a smooth illumination estimate before both streams, and the global DINOv2 vector conditions a feature-space style calibration (with MixStyle~\citep{zhou2021mixstyle}) at strides $4$ and $8$. The stem is trained without synthetic corruptions; Section~\ref{sec:ablation} shows that it does not contribute.
-
-\subsection{Multi-scale reassembly and dual-prototype head}
-We take DINOv2 tokens from blocks $\{2,5,8,11\}$ on a $25\times25$ grid and project each to $D=192$ channels, $S_\ell$. A learned depth-mixing matrix $W=\mathrm{Softmax}(\Theta)\in\mathbb{R}^{4\times4}$ produces one semantic map per decoder scale,
-\begin{equation}
-  \tilde S_s=\sum_{\ell} W_{s,\ell}S_\ell,\qquad \hat S_s=\phi_s\bigl(\mathrm{Up}_s(\tilde S_s,F_{\text{loc}}^{(s)})\bigr),
-  \label{eq:dpt}
-\end{equation}
-where $\mathrm{Up}_s$ at strides $8$ and $16$ predicts $3\times3$ reassembly kernels from the CNN features, so that upsampled semantic features snap to CNN edges.
-
-The prototype head projects the reassembled tokens to $L_2$-normalised embeddings $\hat Z_{u,v}\in\mathbb{R}^{128}$ and compares them with $K=8$ foreground prototypes $p_k^+$ and $K=8$ background prototypes $p_k^-$, plus foreground and background anchors $a^\pm$ that track ground-truth token means during training:
-\begin{align}
-  \pi_{\text{prior}}(u,v) &= \tfrac{\tau}{\beta}\Bigl(\log\textstyle\sum_k e^{\beta\langle\hat Z_{u,v},p_k^+\rangle}\nonumber\\
-  &\quad -\log\textstyle\sum_k e^{\beta\langle\hat Z_{u,v},p_k^-\rangle}\Bigr)\nonumber\\
-  &\quad + w_{\text{a}}\bigl(\langle\hat Z_{u,v},a^+\rangle-\langle\hat Z_{u,v},a^-\rangle\bigr)+b.
-  \label{eq:proto_prior}
-\end{align}
-At test time no mask is available, so the head also computes image-specific self-support centroids $c^+=\mathrm{Norm}(\sum p_{u,v}^2\hat Z_{u,v})$ and $c^-=\mathrm{Norm}(\sum(1-p_{u,v})^2\hat Z_{u,v})$ with $p=\sigma(\pi_{\text{prior}})$, giving the margin map
-\begin{equation}
-  \pi_{\text{proto}}=\pi_{\text{prior}}+w_{\text{ss}}\bigl(\langle\hat Z,c^+\rangle-\langle\hat Z,c^-\rangle\bigr).
-  \label{eq:proto_total}
-\end{equation}
-
-\subsection{Prototype-anchored spatial support envelope (PASSE)}
-CNN texture far from the lesion can cross the decision threshold and produce isolated false positives. PASSE builds a coarse semantic probability $P_{\text{sem}}=\sigma(0.5\,M_4^{\uparrow25}+0.5\,\pi_{\text{proto}})$ from the coarsest decoder logit $M_4$ and the prototype margin, dilates it into a smooth envelope
-\begin{equation}
-  \mathcal{E}=\mathrm{AvgPool}_{3\times3}\bigl(\mathrm{MaxPool}_{5\times5}(P_{\text{sem}})\bigr),
-  \label{eq:passe_env}
-\end{equation}
-and uses it to modulate the stride-$4$ decoder logit $Z_{88}$:
-\begin{align}
-  Z_{88}^{\text{P}} &= Z_{88}-\lambda_{\text{out}}\,\mathrm{ReLU}\bigl(t_{\text{out}}-\mathcal{E}^{\uparrow88}\bigr)\nonumber\\
-  &\quad +\lambda_{\text{in}}\,\mathrm{ReLU}\bigl(P_{\text{sem}}^{\uparrow88}-t_{\text{in}}\bigr),\nonumber\\
-  Z &= 0.8\,\bigl(Z_{88}^{\text{P}}\bigr)^{\uparrow352}+0.2\,\pi_{\text{proto}}^{\uparrow352}.
-  \label{eq:passe_mod}
-\end{align}
-The first term suppresses logits outside the envelope and the second reinforces confident lesion cores ($t_{\text{out}}=0.22$, $\lambda_{\text{out}}=10$, $t_{\text{in}}=0.38$, $\lambda_{\text{in}}=1.2$).
-
-\subsection{Strip fusion and uncertainty-guided decoder}
-At strides $8$--$32$ the two streams are fused with a gated directional strip operator,
-\begin{align}
-  \mathrm{Strip}(U,C) &= U+g_h\odot\mathcal{K}_{7\times1}\mathcal{K}_{1\times11}(U)\nonumber\\
-  &\quad +g_v\odot\mathcal{K}_{1\times7}\mathcal{K}_{11\times1}(U)+g_d\odot\mathcal{K}_{3\times3,d=3}(U),
-  \label{eq:stripssm}
-\end{align}
-where $\mathcal{K}$ are depthwise convolutions and the gates $(g_h,g_v,g_d)=\sigma(\mathrm{Conv}_{1\times1}([U,C]))$ are conditioned on the other stream. Each top-down decoder stage receives the upsampled logit of the coarser stage, converts it to a foreground probability $A$, and computes the boundary uncertainty $U=4A(1-A)$, which peaks at $A=0.5$, and an outer ring $\mathrm{MaxPool}_{5\times5}(A)-A$. Both maps gate the strip operator and a Sobel edge refinement, so computation concentrates on ambiguous borders.
-
-\subsection{Training objective}
-Every model in this paper, including the baselines, is trained with the same loss:
-\begin{align}
-  \mathcal{L} &= \mathcal{L}_{\text{BCE+Dice}}^{w}(Z,Y)+0.25\,\mathcal{L}_{\text{Tversky}}^{w}(Z,Y)\nonumber\\
-  &\quad +0.1\,\mathcal{L}_{\text{far}}(Z,Y)+\tfrac{0.25}{3}\textstyle\sum_{j=2}^{4}\mathcal{L}_{\text{BCE+Dice}}^{w}(M_j,Y)\nonumber\\
-  &\quad +0.35\,\mathcal{L}_{\text{proto}}(\pi_{\text{proto}},Y_{25}).
-  \label{eq:loss}
-\end{align}
-The per-image weights $w$ grow as lesion area shrinks, the Tversky trade-off shifts towards recall for small lesions, $\mathcal{L}_{\text{far}}$ penalises predicted probability outside dilations of the ground truth, and $M_j$ are deep-supervision logits. $\mathcal{L}_{\text{proto}}$ applies the same Dice, cross-entropy and Tversky terms to the prototype margin and is present only in models with the prototype head. The published baselines are trained with their official losses; one Polyp-PVT run uses Eq.~\eqref{eq:loss} as a loss-matched control.
-
-\section{Experimental Setup}
-\subsection{Data and cohorts}
-We deduplicate every evaluation set against the training data with MD5 hashes and a $64$-bit perceptual difference hash ($\text{dHash}\le4$), and remove Kvasir frames that public composites redistribute under other names.
-\begin{itemize}
-  \item \textbf{Kvasir-SEG}~\citep{jha2020kvasir}: $800$ training images (\emph{Full} track), a fixed $40$-image subset of them ($5\%$, the few-shot track $S_1$), $95$ validation and $90$ in-domain test images.
-  \item \textbf{PolypGen}~\citep{ali2023polypgen}: six centres; a development set ($n=258$) and an extended holdout ($n=974$) that was not inspected during design and serves as a confirmation cohort.
-  \item \textbf{PraNet external sets}~\citep{fan2020pranet}: CVC-300 ($60$), CVC-ClinicDB ($61$), CVC-ColonDB ($379$) and ETIS-LaribPolypDB ($196$), $696$ images after deduplication. ClinicDB is unseen because we train on Kvasir only.
-  \item \textbf{$S_2$, tiny and camouflaged} ($n=310$): natural lesions from PolypGen-Dev, ETIS and ColonDB covering under $1.5\%$ of the frame, or under $3\%$ with low boundary contrast.
-  \item \textbf{$S_3$, adverse acquisition} ($n=258$): PolypGen-Dev frames under one of four deterministic corruptions: NBI-like spectral shift, low light with vignetting and shot noise, specular glare with blur, and a combined severe mode.
-\end{itemize}
-$S_2$ and $S_3$ are diagnostic slices of the external cohorts, not independent patient cohorts, and $S_3$ is synthetic.
 
 \begin{figure*}[!t]
   \centering
   \includegraphics[width=\linewidth]{figs/stress_examples.pdf}
-  \caption{\textbf{The stress cohorts contain frames on which a few-shot CNN fails outright.} \textbf{(a)}~One PolypGen-Dev frame shown clean and under the four $S_3$ corruptions; in the benchmark each frame receives one of the four. Below each corruption: cohort-level mDice of the ConvNeXt-T baseline (B) and DANG (F) on that corruption family, few-shot track, mean of $5$ seeds. \textbf{(b)}~Five $S_2$ lesions drawn at random (three tiny, two camouflaged). Below each: lesion area and per-image Dice of B and F, few-shot track, mean of $5$ seeds. Yellow contours are ground truth; predicted masks are shown in Figure~\ref{fig:qual}.}
+  \caption{\textbf{The two stress cohorts.} \textbf{(a)}~One PolypGen-Dev frame, clean and under the four synthetic corruptions of the adverse cohort; in the benchmark each frame receives one of the four. \textbf{(b)}~Five tiny or camouflaged lesions drawn at random (three tiny, two camouflaged), not curated. Yellow contours are ground truth. Predictions on such frames are shown in Figure~\ref{fig:qual}.}
   \label{fig:examples}
 \end{figure*}
 
-\subsection{Training and evaluation}
-All models are trained at $352\times352$ with batch size $16$, AdamW, warm-up followed by cosine decay, an exponential moving average of the weights, and mixed precision. The few-shot track trains for $40$ epochs and the Full track for $20$. The checkpoint is selected by Kvasir validation mDice only. Every model, including the published baselines, uses the same data, augmentation, schedule, seeds and evaluation code; for a given seed all models see the same $40$-image subset.
+Vision foundation models such as DINOv2~\citep{oquab2024dinov2} and SAM~\citep{kirillov2023segment} provide features that transfer across domains, but their $14$- or $16$-pixel patch grids are too coarse for lesion boundaries. Concatenating such features with a CNN is the obvious remedy; we show that it does not help when labels are scarce. \emph{We therefore do not target in-domain state of the art; we ask how frozen foundation features should be used when only a few frames are labelled.}
 
-Predictions are thresholded at $0.5$. We report mDice, Boundary F1 (BF1, $2$-pixel tolerance) and the 95th-percentile Hausdorff distance (HD95, pixels at $352\times352$). Differences between models are tested with paired $t$-tests over seeds $42$--$46$, and each family of $12$ comparisons is corrected with Holm's procedure. Inference speed is measured at batch size $1$ in FP16 on an NVIDIA T4.
+We present \textbf{DANG} (Figure~\ref{fig:arch}) and make three contributions:
+\begin{itemize}
+  \item \textbf{A decoder that uses foundation features through prototypes.} Multi-depth DINOv2 tokens feed a dual-prototype margin head with test-time self-support; the \textbf{prototype-anchored spatial support envelope (PASSE)} turns this margin into a mask that suppresses false positives far from the lesion and reinforces low-contrast lesion cores; and an uncertainty-guided strip decoder refines boundaries where the coarse prediction is ambiguous.
+  \item \textbf{A controlled evaluation protocol.} A deduplicated multi-centre benchmark with a $40$-label training regime and two stress cohorts (Figure~\ref{fig:examples}); PraNet~\citep{fan2020pranet}, Polyp-PVT~\citep{dong2021polyp} and EMCAD~\citep{rahman2024emcad} retrained under the same data, schedule and evaluation; five paired seeds with Holm-corrected tests; and a standard-split experiment that links the protocol to published numbers.
+  \item \textbf{Findings, positive and negative.} A same-size concatenation control shows that the frozen features alone do not explain DANG's gain. DANG leads all retrained models with $40$ labels, ties the strongest of them with $800$ labels, and costs $2$--$2.5\times$ their inference time; its Retinex stem shows no measurable gain.
+\end{itemize}
+
+\section{Related Work}
+\paragraph{Polyp segmentation.} Architectures progressed from U-Net~\citep{ronneberger2015unet} and UNet++~\citep{zhou2018unetplusplus} to reverse-attention networks: PraNet~\citep{fan2020pranet} mines boundary cues with parallel partial decoders and reverse attention, and CaraNet~\citep{lou2022caranet} adds axial context for small objects. Transformer encoders improved multi-centre generalisation in Polyp-PVT~\citep{dong2021polyp} and TransFuse~\citep{zhang2021transfuse}, and EMCAD~\citep{rahman2024emcad} pairs a PVTv2 encoder with an efficient multi-scale convolutional attention decoder. Label-efficient work on polyps has mostly been semi-supervised; FPGM~\citep{xi2025fpgm}, for example, uses a frequency prior on polyp edges to augment unlabelled images and improve generalisation to new centres. DANG instead uses no unlabelled data and draws its prior from a frozen foundation model.
+
+\paragraph{Foundation models for polyps.} SAM applied without prompts segments polyps poorly~\citep{zhou2023samPolyps}, and MedSAM~\citep{ma2024medsam} fine-tunes SAM on a large medical corpus but requires box prompts. SAM-Mamba~\citep{dutta2024sammamba} and SAM-MaGuP~\citep{dutta2025sammagup} adapt SAM with Mamba-based priors for zero-shot polyp generalisation, at about $103$M parameters and $423$~GFLOPs~\citep{agnihotri2026litebound}. A second line distils foundation models into small networks: Polyp-DiFoM~\citep{agnihotri2025difom} distils SAM and DINOv2 into lightweight baselines, LiteBounD~\citep{agnihotri2026litebound} adds boundary-guided frequency-aware distillation, and Lite-$\pi$~\citep{agnihotri2026litepi} aligns foundation-model-specific prototypes with a lightweight network for real-time inference. DANG keeps the foundation model at inference and studies how to use its features when labels are scarce; distillation is complementary and could compress it.
+
+\paragraph{Prototype-based segmentation.} Few-shot semantic segmentation classifies query pixels by their similarity to class prototypes computed from support images~\citep{wang2019panet}. Self-support prototypes~\citep{fan2022ssp} are built from confident features of the query image itself, which narrows the gap between support and query appearance. DANG adopts this self-support idea inside a fully supervised segmenter: learned prototypes and ground-truth anchors give a prior, and image-specific self-support centroids adapt it at test time.
+
+\paragraph{Adaptation and directional operators.} Low-rank adaptation (LoRA~\citep{hu2022lora}), its convolutional variant for SAM (Conv-LoRA~\citep{zhong2024convlora}) and dense-prediction heads (DPT~\citep{ranftl2021vision}) adapt frozen ViTs to segmentation; DANG uses convolutional low-rank adapters and a DPT-style reassembler. State-space models (Mamba~\citep{gu2023mamba}, VMamba~\citep{liu2024vmamba}, U-Mamba~\citep{ma2024umamba}) capture long-range context with directional scans; our strip operator approximates directional context with depthwise strip convolutions.
+
+\paragraph{Robustness evaluation.} Our synthetic adverse cohort follows the corruption-benchmark design of ImageNet-C~\citep{hendrycks2019benchmarking}: deterministic, parametrised corruptions applied only at test time.
+
+\section{Method}
+DANG maps an RGB frame $I\in\mathbb{R}^{3\times352\times352}$ to a polyp probability map $\hat Y=\sigma(Z)$ (Figure~\ref{fig:arch}). We write $X^{\uparrow n}$ for bilinear upsampling of a map $X$ to $n\times n$.
+
+\subsection{Two streams}
+\label{sec:stem}
+The local stream is ConvNeXt-Tiny, producing features $F^{(s)}$ at strides $s\in\{4,8,16,32\}$. The semantic stream is DINOv2-Base, frozen, applied to the frame resized to $350\times350$ so that its $14$-pixel patches form a $25\times25$ grid. Rank-$4$ convolutional low-rank adapters~\citep{zhong2024convlora} on its last four blocks are trained. The evaluated model also contains a Retinex chromatic stem~\citep{land1971lightness}, which removes specular highlights and divides out a smooth illumination estimate before both streams, and a style calibration of $F^{(4)}$ and $F^{(8)}$ conditioned on the global DINOv2 vector (with MixStyle~\citep{zhou2021mixstyle}). Neither is trained on corrupted images, and Section~\ref{sec:ablation} shows that together they give no measurable gain.
+
+\subsection{Multi-scale reassembly}
+We take DINOv2 tokens from blocks $\{2,5,8,11\}$ and project each to a $192$-channel map $S_\ell$ on the $25\times25$ grid. A learned depth-mixing matrix $W=\mathrm{Softmax}(\Theta)\in\mathbb{R}^{4\times4}$, with $\Theta$ learned logits, produces one semantic map per stride,
+\begin{equation}
+  \tilde S_s=\sum_{\ell} W_{s,\ell}S_\ell,\qquad \hat S_s=\phi_s\bigl(\mathrm{Up}_s(\tilde S_s,F^{(s)})\bigr),
+  \label{eq:dpt}
+\end{equation}
+where $\phi_s$ is a $3\times3$ convolution block and $\mathrm{Up}_s$ resizes to stride $s$. At strides $8$ and $16$, $\mathrm{Up}_s$ predicts $3\times3$ reassembly kernels from $F^{(s)}$, initialised to bilinear interpolation, so that upsampled semantic features align with CNN edges; at the other strides it is bilinear.
+
+\subsection{Dual-prototype head}
+The head concatenates the three deepest maps, projects them to $128$ channels and normalises each position to a unit embedding $e_{u,v}$. It compares $e_{u,v}$ with $K=8$ learned foreground prototypes $p_k^+$ and $K=8$ background prototypes $p_k^-$ (unit vectors, orthogonally initialised), and with a foreground anchor $a^+$ and background anchor $a^-$:
+\begin{align}
+  \pi_{\text{prior}}(u,v) &= \tfrac{\tau}{\beta}\Bigl(\log\textstyle\sum_k e^{\beta\langle e_{u,v},p_k^+\rangle}-\log\textstyle\sum_k e^{\beta\langle e_{u,v},p_k^-\rangle}\Bigr)\nonumber\\
+  &\quad + w_{\text{a}}\bigl(\langle e_{u,v},a^+\rangle-\langle e_{u,v},a^-\rangle\bigr)+b.
+  \label{eq:proto_prior}
+\end{align}
+The log-sum-exp with sharpness $\beta$ (fixed) is a soft maximum over prototypes; the temperature $\tau$, the bias $b$ and the bounded anchor weight $w_{\text{a}}$ are learned. During training only, $a^\pm$ are exponential moving averages of the embeddings at positions where the ground-truth mask, average-pooled to $25\times25$, is mostly foreground or mostly background. At training and test time the head then forms image-specific self-support centroids~\citep{fan2022ssp} weighted by the prior's own confidence, $c^+=\mathrm{Norm}(\sum_{u,v}q_{u,v}^2e_{u,v})$ and $c^-=\mathrm{Norm}(\sum_{u,v}(1-q_{u,v})^2e_{u,v})$ with $q=\sigma(\pi_{\text{prior}})$, and outputs the margin map
+\begin{equation}
+  \pi_{\text{proto}}=\pi_{\text{prior}}+w_{\text{ss}}\bigl(\langle e,c^+\rangle-\langle e,c^-\rangle\bigr),
+  \label{eq:proto_total}
+\end{equation}
+with a learned bounded weight $w_{\text{ss}}$. Constant values are listed in Appendix~\ref{app:impl}.
+
+\subsection{Strip fusion and uncertainty-guided decoder}
+At strides $8$--$32$ the local features $F^{(s)}$ and semantic maps $\hat S_s$ are fused by a gated directional operator applied to a feature map $X$ with conditioning map $C$ from the other stream:
+\begin{align}
+  \mathrm{Strip}(X,C) &= X+g_h\odot\mathcal{K}_{7\times1}\mathcal{K}_{1\times11}(X)\nonumber\\
+  &\quad +g_v\odot\mathcal{K}_{1\times7}\mathcal{K}_{11\times1}(X)+g_d\odot\mathcal{K}_{3\times3,d=3}(X).
+  \label{eq:stripssm}
+\end{align}
+Here $\mathcal{K}$ are depthwise convolutions (horizontal and vertical strips, and a dilated $3\times3$ branch for diagonal context) and $(g_h,g_v,g_d)=\sigma(\mathrm{Conv}_{1\times1}([X,C]))$ are gates. The top-down decoder has four stages that output logits $M_4,\dots,M_1$ at strides $32,\dots,4$. Each stage converts the upsampled logit of the coarser stage into a probability $p$, computes the boundary uncertainty $u=4p(1-p)$, which peaks on ambiguous borders where $p=0.5$, and an outer ring $\mathrm{MaxPool}_{5\times5}(p)-p$ just outside the predicted lesion, and uses both maps to gate its strip operator and a Sobel-based edge branch. The stride-$4$ decoder output is $Z_{\text{dec}}=0.8\,Z_{\text{head}}+0.2\,\pi_{\text{proto}}^{\uparrow88}$, where $Z_{\text{head}}$ combines $M_1$ with a head over all four stages.
+
+\subsection{Prototype-anchored spatial support envelope (PASSE)}
+CNN texture far from the lesion can cross the decision threshold and produce isolated false positives. PASSE builds a coarse semantic probability $P_{\text{sem}}=\sigma\bigl(\tfrac12 M_4^{\uparrow25}+\tfrac12\pi_{\text{proto}}\bigr)$, dilates it into a smooth envelope
+\begin{equation}
+  \mathcal{E}=\mathrm{AvgPool}_{3\times3}\bigl(\mathrm{MaxPool}_{5\times5}(P_{\text{sem}})\bigr),
+  \label{eq:passe_env}
+\end{equation}
+and uses both maps to modulate the decoder output:
+\begin{align}
+  Z = \Bigl(Z_{\text{dec}} &-\lambda_{\text{out}}\,\mathrm{ReLU}\bigl(t_{\text{out}}-\mathcal{E}^{\uparrow88}\bigr)\nonumber\\
+  &+\lambda_{\text{in}}\,\mathrm{ReLU}\bigl(P_{\text{sem}}^{\uparrow88}-t_{\text{in}}\bigr)\Bigr)^{\uparrow352}.
+  \label{eq:passe_mod}
+\end{align}
+The first term lowers logits outside the envelope, and the second raises them in confident lesion cores.
+
+\subsection{Training objective}
+DANG and our in-house controls are trained with
+\begin{align}
+  \mathcal{L} &= \mathcal{L}_{\text{BCE+Dice}}^{w}(Z,Y)+0.25\,\mathcal{L}_{\text{Tv}}^{w}(Z,Y)+0.1\,\mathcal{L}_{\text{far}}(Z,Y)\nonumber\\
+  &\quad +\tfrac{0.25}{3}\textstyle\sum_{j=2}^{4}\mathcal{L}_{\text{BCE+Dice}}^{w}(M_j^{\uparrow352},Y)+0.35\,\mathcal{L}_{\text{proto}}.
+  \label{eq:loss}
+\end{align}
+Each image's terms are weighted by $w$, which grows as lesion area shrinks. The Tversky term $\mathcal{L}_{\text{Tv}}$ penalises false negatives more for small lesions. $\mathcal{L}_{\text{far}}$ is the mean predicted probability outside dilations of the ground truth. The three coarser decoder logits $M_2,\dots,M_4$ receive deep supervision. $\mathcal{L}_{\text{proto}}$ applies the cross-entropy, Dice and Tversky terms to $\pi_{\text{proto}}$ against the mask average-pooled to $25\times25$ and is present only in models with the prototype head. Exact forms are in Appendix~\ref{app:impl}. The retrained published models use their official losses; one Polyp-PVT is additionally trained with Eq.~\eqref{eq:loss} as a loss-matched control.
+
+\section{Experimental Setup}
+\subsection{Data}
+We remove from every evaluation set the images that duplicate training images, using MD5 hashes and a $64$-bit perceptual difference hash ($\text{dHash}\le4$); this includes Kvasir frames that public composites redistribute under other names. Table~\ref{tab:data} lists the cohorts. ``Tiny/camouflaged'' and ``adverse'' are diagnostic slices of the external cohorts, not independent patient cohorts, and the adverse cohort is synthetic. We write ``$40\to X$'' for a model trained on the $40$-label subset and evaluated on cohort $X$, and ``$800\to X$'' for the full training set. The $40$-label subset is a fixed $5\%$ random draw of the $800$ training images, identical for all seeds and models.
+
+\begin{table}[!t]
+  \centering
+  \caption{\textbf{Cohorts after deduplication.} Tiny: lesion under $1.5\%$ of the frame; camouflaged: under $3\%$ with low colour contrast across the lesion boundary. Adverse corruptions: NBI-like spectral shift; low light ($\gamma$, vignetting, sensor noise); specular glare with blur; and the three combined.}
+  \label{tab:data}
+  \vspace{2pt}
+  \setlength{\tabcolsep}{3pt}\footnotesize
+  \begin{tabular}{@{}p{0.27\columnwidth} p{0.38\columnwidth} r l@{}}
+    \toprule
+    \textbf{Cohort} & \textbf{Source} & \textbf{Images} & \textbf{Role} \\
+    \midrule
+    Train & Kvasir-SEG~\citep{jha2020kvasir} & 800 & training \\
+    \quad 40-label subset & Kvasir-SEG & 40 & training \\
+    Validation & Kvasir-SEG & 95 & selection \\
+    Kvasir test & Kvasir-SEG & 90 & in domain \\
+    PolypGen-Dev & PolypGen~\citep{ali2023polypgen} & 258 & external \\
+    PolypGen-Ext & PolypGen & 974 & held out \\
+    \quad PolypGen-Ext-SD & sequence-disjoint subset & 900 & held out \\
+    PraNet-Ext & CVC-300, ClinicDB, ColonDB, ETIS~\citep{fan2020pranet} & 696 & external \\
+    \quad ETIS & ETIS-LaribPolypDB & 196 & external \\
+    Tiny/camouflaged & PolypGen-Dev, ETIS, ColonDB ($188+122$) & 310 & stress \\
+    Adverse & PolypGen-Dev, 4 corruptions & 258 & stress \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+PolypGen-Ext was not inspected during design and serves as a confirmation cohort. Because $74$ of its frames share video sequences with PolypGen-Dev, we also report its sequence-disjoint subset PolypGen-Ext-SD. ClinicDB is unseen because training uses Kvasir only.
+
+\subsection{Training and models}
+All models are trained at $352\times352$ with batch size $16$, AdamW, warm-up followed by cosine decay, gradient clipping, mixed precision, random scaling, flips, $90^\circ$ rotations and mild colour jitter, for $40$ epochs on the $40$-label subset and $20$ epochs on the $800$ images. After each epoch we evaluate both the raw weights and their exponential moving average on the validation set and keep the better checkpoint; test sets are never used for selection. Appendix~\ref{app:impl} lists all hyperparameters.
+
+PraNet, Polyp-PVT and EMCAD use their official architectures, ImageNet-pretrained backbones (Res2Net-50 and PVTv2-B2) and official losses, with our optimiser, schedule, augmentation and evaluation. Our in-house models are a ConvNeXt-Tiny + FPN baseline; a \emph{concatenation control} that adds the same frozen DINOv2 and adapters as DANG and fuses the two streams by concatenation into an FPN decoder; DANG without the stem and style calibration; and DANG.
+
+\subsection{Metrics and statistics}
+\label{sec:stats}
+Predictions are thresholded at $0.5$. mDice is the mean of per-image Dice scores. Boundary F1 (BF1)~\citep{csurka2013good} matches predicted and ground-truth contours within $2$ pixels. Appendix~\ref{app:hd95} reports the 95th-percentile Hausdorff distance (HD95).
+
+Five seeds ($n=5$) are the unit of analysis. For a given seed, all models see the same subset and data order, so differences are tested with two-sided paired $t$-tests. For every pair of models we correct the $12$ primary comparisons (mDice, BF1 and HD95 on the three $40$-label external cohorts; mDice on $800\to$ETIS, PraNet-Ext and PolypGen-Ext) with Holm's procedure~\citep{holm1979simple}. Figure intervals are $95\%$ $t$-intervals. Inference speed is measured at batch size $1$ in FP16 on an NVIDIA T4.
 
 \section{Results}
 
-\subsection{Comparison with retrained state of the art}
-\label{sec:sota}
-
 \begin{table*}[!t]
   \centering
-  \caption{\textbf{DANG leads every retrained model when labels are scarce and ties the strongest ones with full data.} All models trained on Kvasir-SEG with the same data, augmentation, schedule and evaluation; mean $\pm$ SD over $5$ seeds. Few-shot columns use $40$ labelled images, Full columns $800$. $^{*}$: worse than DANG after Holm correction (paired $t$-test, $n=5$). Params are total parameters in millions (DANG: $43.3$M trainable, $86.6$M frozen); FPS at batch size $1$, FP16, NVIDIA T4. ``Polyp-PVT, our loss'' is trained with Eq.~\eqref{eq:loss} instead of its official loss.}
+  \caption{\textbf{With $40$ labels DANG leads every retrained model; with $800$ labels it ties the strongest.} mDice and BF1 (\%), mean $\pm$ SD over $5$ seeds; ``$40\to$'' columns train on $40$ Kvasir images, ``$800\to$'' columns on $800$. \textbf{Bold}: best in column. $^{*}$: worse than DANG after Holm correction (Section~\ref{sec:stats}). Params: total parameters in millions (DANG: $43.3$M trained, $86.6$M frozen). FPS: batch size $1$, FP16, NVIDIA T4.}
   \label{tab:sota}
   \vspace{2pt}
   \setlength{\tabcolsep}{3.5pt}\resizebox{\textwidth}{!}{%
   \begin{tabular}{l cc cc cc cc ccc}
     \toprule
-    & & & \multicolumn{2}{c}{\textbf{$S_1\times S_2$ tiny/camo}} & \multicolumn{2}{c}{\textbf{$S_1\times S_3$ adverse}} & \multicolumn{2}{c}{\textbf{$S_1\to$ PraNet-Ext}} & \multicolumn{3}{c}{\textbf{Full, mDice}} \\
+    & & & \multicolumn{2}{c}{\textbf{$40\to$ Tiny/camouflaged}} & \multicolumn{2}{c}{\textbf{$40\to$ Adverse}} & \multicolumn{2}{c}{\textbf{$40\to$ PraNet-Ext}} & \multicolumn{3}{c}{\textbf{$800\to$, mDice}} \\
     \cmidrule(lr){4-5} \cmidrule(lr){6-7} \cmidrule(lr){8-9} \cmidrule(lr){10-12}
-    \textbf{Model} & Params & FPS & mDice & BF1 & mDice & BF1 & mDice & BF1 & ETIS & PraNet-Ext & PGen-Ext \\
+    \textbf{Model} & Params & FPS & mDice & BF1 & mDice & BF1 & mDice & BF1 & ETIS & PraNet-Ext & PolypGen-Ext \\
     \midrule
-    ConvNeXt-T + FPN & 31.0 & 91.9 & $44.7_{\pm 3.8}$ & $16.2_{\pm 3.9}$$^{*}$ & $45.6_{\pm 4.0}$$^{*}$ & $15.2_{\pm 2.0}$$^{*}$ & $66.6_{\pm 3.8}$ & $28.4_{\pm 4.8}$$^{*}$ & $72.5_{\pm 2.7}$$^{*}$ & $78.7_{\pm 1.5}$$^{*}$ & $78.7_{\pm 0.8}$$^{*}$ \\
+    \multicolumn{12}{l}{\textit{Published models, retrained under our protocol}} \\
     PraNet~\citep{fan2020pranet} & 30.5 & 40.6 & $40.4_{\pm 1.5}$$^{*}$ & $21.6_{\pm 1.5}$$^{*}$ & $48.5_{\pm 3.5}$$^{*}$ & $22.4_{\pm 1.6}$$^{*}$ & $62.9_{\pm 1.7}$$^{*}$ & $32.2_{\pm 1.2}$$^{*}$ & $69.7_{\pm 2.0}$$^{*}$ & $76.7_{\pm 1.1}$$^{*}$ & $76.9_{\pm 0.9}$$^{*}$ \\
-    Polyp-PVT~\citep{dong2021polyp} & 25.1 & 42.4 & $42.9_{\pm 4.0}$ & $14.8_{\pm 4.2}$$^{*}$ & $39.3_{\pm 4.5}$$^{*}$ & $10.7_{\pm 2.6}$$^{*}$ & $64.3_{\pm 4.5}$ & $21.5_{\pm 6.5}$$^{*}$ & $77.5_{\pm 2.2}$ & $81.1_{\pm 0.8}$ & $80.2_{\pm 1.6}$ \\
-    Polyp-PVT, our loss & 25.1 & 43.0 & $43.9_{\pm 10.2}$ & $16.4_{\pm 6.8}$ & $38.3_{\pm 11.4}$ & $12.1_{\pm 4.9}$ & $62.2_{\pm 12.7}$ & $22.7_{\pm 9.2}$ & $77.2_{\pm 1.0}$ & $80.4_{\pm 0.8}$ & $79.4_{\pm 1.0}$ \\
+    Polyp-PVT~\citep{dong2021polyp} & 25.1 & 42.4 & $42.9_{\pm 4.0}$ & $14.8_{\pm 4.2}$$^{*}$ & $39.3_{\pm 4.5}$$^{*}$ & $10.7_{\pm 2.6}$$^{*}$ & $64.3_{\pm 4.5}$ & $21.5_{\pm 6.5}$$^{*}$ & $77.5_{\pm 2.2}$ & $81.1_{\pm 0.8}$ & $\mathbf{80.2}_{\pm 1.6}$ \\
+    Polyp-PVT, loss of Eq.~\eqref{eq:loss} & 25.1 & 43.0 & $43.9_{\pm 10.2}$ & $16.4_{\pm 6.8}$ & $38.3_{\pm 11.4}$ & $12.1_{\pm 4.9}$ & $62.2_{\pm 12.7}$ & $22.7_{\pm 9.2}$ & $77.2_{\pm 1.0}$ & $80.4_{\pm 0.8}$ & $79.4_{\pm 1.0}$ \\
     EMCAD~\citep{rahman2024emcad} & 26.8 & 36.5 & $29.6_{\pm 3.1}$$^{*}$ & $6.0_{\pm 2.5}$$^{*}$ & $29.2_{\pm 3.5}$$^{*}$ & $3.3_{\pm 1.1}$$^{*}$ & $49.7_{\pm 4.9}$$^{*}$ & $8.0_{\pm 4.1}$$^{*}$ & $77.5_{\pm 2.1}$ & $81.0_{\pm 0.9}$ & $79.7_{\pm 0.9}$ \\
     \midrule
-    \textbf{DANG} & 129.9 & 17.4 & $\mathbf{51.0}_{\pm 1.7}$ & $\mathbf{30.7}_{\pm 1.2}$ & $\mathbf{55.8}_{\pm 1.2}$ & $\mathbf{27.2}_{\pm 1.7}$ & $\mathbf{71.9}_{\pm 0.3}$ & $\mathbf{42.2}_{\pm 1.6}$ & $\mathbf{78.9}_{\pm 1.5}$ & $\mathbf{81.8}_{\pm 0.6}$ & $\mathbf{80.1}_{\pm 0.4}$ \\
+    \multicolumn{12}{l}{\textit{In-house models}} \\
+    ConvNeXt-T + FPN & 31.0 & 91.9 & $44.7_{\pm 3.8}$ & $16.2_{\pm 3.9}$$^{*}$ & $45.6_{\pm 4.0}$$^{*}$ & $15.2_{\pm 2.0}$$^{*}$ & $66.6_{\pm 3.8}$ & $28.4_{\pm 4.8}$$^{*}$ & $72.5_{\pm 2.7}$$^{*}$ & $78.7_{\pm 1.5}$$^{*}$ & $78.7_{\pm 0.8}$$^{*}$ \\
+    Concatenation control & 120.2 & 38.4 & $44.9_{\pm 0.8}$$^{*}$ & $16.6_{\pm 2.5}$$^{*}$ & $46.3_{\pm 1.8}$$^{*}$ & $16.4_{\pm 1.6}$$^{*}$ & $67.2_{\pm 1.2}$$^{*}$ & $29.2_{\pm 4.2}$$^{*}$ & $72.9_{\pm 3.9}$ & $79.7_{\pm 1.0}$$^{*}$ & $79.3_{\pm 1.4}$ \\
+    DANG without stem & 129.4 & 19.3 & $50.1_{\pm 1.4}$ & $27.4_{\pm 1.6}$ & $\mathbf{57.2}_{\pm 2.0}$ & $25.6_{\pm 1.1}$ & $71.5_{\pm 0.8}$ & $40.4_{\pm 1.0}$ & $77.5_{\pm 0.7}$ & $\mathbf{81.9}_{\pm 0.8}$ & $79.7_{\pm 0.7}$ \\
+    \textbf{DANG} & 129.9 & 17.4 & $\mathbf{51.0}_{\pm 1.7}$ & $\mathbf{30.7}_{\pm 1.2}$ & $55.8_{\pm 1.2}$ & $\mathbf{27.2}_{\pm 1.7}$ & $\mathbf{71.9}_{\pm 0.3}$ & $\mathbf{42.2}_{\pm 1.6}$ & $\mathbf{78.9}_{\pm 1.5}$ & $81.8_{\pm 0.6}$ & $80.1_{\pm 0.4}$ \\
     \bottomrule
   \end{tabular}%
   }
 \end{table*}
 
+\subsection{Comparison with retrained published models}
+\label{sec:sota}
 Table~\ref{tab:sota} compares DANG with PraNet, Polyp-PVT and EMCAD retrained under our protocol.
 
-\paragraph{Few labels.} With $40$ labelled images DANG has the highest mDice and BF1 on every few-shot cohort. Against Polyp-PVT, the strongest retrained model, it gains $8.2$~pp mDice on tiny/camouflaged lesions, $16.6$~pp on adverse acquisitions and $7.6$~pp on the PraNet external sets, and $15.8$--$20.8$~pp BF1. All BF1 and adverse-acquisition differences survive Holm correction; the tiny/camouflaged and PraNet-external mDice differences do not (adjusted $p=0.085$). EMCAD, whose decoder is designed for efficiency, degrades most in this regime. Training Polyp-PVT with our loss does not close the gap and makes it unstable across seeds (SD up to $12.7$~pp), so the gap is not a loss artefact.
+\paragraph{$40$ labels.} DANG has the highest mDice and BF1 of all retrained models on all three external cohorts. Its margin over the best retrained model in each column is $7.1$--$7.6$~pp mDice and $4.8$--$10.0$~pp BF1; the best competitor is PraNet in four columns and a Polyp-PVT variant in two. Against the models trained with their official losses, every BF1 difference and every adverse-cohort mDice difference survives Holm correction. The tiny/camouflaged and PraNet-Ext mDice differences to Polyp-PVT do not (adjusted $p=0.085$ for each). The Polyp-PVT trained with our loss does not close the gap in mean, but its seed-to-seed SD reaches $12.7$~pp and none of its differences to DANG is significant.
 
-\paragraph{Full data.} With $800$ labelled images DANG still beats PraNet on all cohorts, but its leads over Polyp-PVT ($+1.4$~pp on ETIS, $+0.7$~pp on PraNet-Ext, $-0.1$~pp on PolypGen-Ext) and EMCAD are not significant. DANG's advantage is therefore specific to label-scarce and shifted conditions.
+\paragraph{$800$ labels.} DANG still beats PraNet on every cohort. Its differences to Polyp-PVT ($+1.4$~pp on ETIS, $+0.7$~pp on PraNet-Ext, $-0.1$~pp on PolypGen-Ext) and to EMCAD are not significant. DANG's advantage is therefore specific to the label-scarce regime.
 
-\paragraph{Qualitative results.} Figure~\ref{fig:qual} shows predicted masks on randomly drawn stress frames. The tiny ColonDB lesion is missed by every model. On the camouflaged, low-light and combined-corruption frames DANG recovers the lesion with Dice $82$, $53$ and $60$, and on the low-light frame it is the only model that finds the lesion at all.
+\paragraph{Qualitative results.} Figure~\ref{fig:qual} shows predicted masks on randomly drawn frames. Every model misses the tiny ColonDB lesion. On the camouflaged, low-light and combined-corruption frames DANG reaches Dice $82\%$, $53\%$ and $60\%$, and on the low-light frame it is the only model that finds the lesion. On the NBI frame DANG ($63\%$) is below the baseline ($67\%$) and PraNet ($65\%$).
 
 \begin{figure*}[!t]
   \centering
   \includegraphics[width=\linewidth]{figs/qualitative_predictions.pdf}
-  \caption{\textbf{Predicted masks on stress frames, few-shot track.} Each row is one frame drawn at random (not curated) from the named stratum; columns are the ConvNeXt-T baseline, PraNet, Polyp-PVT, EMCAD and DANG, each trained on the same $40$ Kvasir images (seed $42$). Blue fill: prediction at threshold $0.5$; yellow contour: ground truth; number: per-image Dice.}
+  \caption{\textbf{Predicted masks with $40$ training labels.} Each row is one frame drawn at random (not curated) from the named cohort; columns are the ConvNeXt-T baseline, PraNet, Polyp-PVT, EMCAD and DANG, all trained on the same $40$ Kvasir images with the same seed. Blue fill: prediction at threshold $0.5$; yellow contour: ground truth; number: per-image Dice (\%).}
   \label{fig:qual}
 \end{figure*}
 
-\subsection{Standard split and published numbers}
+\subsection{Standard training split}
 \label{sec:std}
-Our protocol trains on Kvasir only, so its numbers are not comparable to the literature, which trains on $900$ Kvasir and $550$ ClinicDB images. To tie the two, we trained DANG and Polyp-PVT on this standard split for $50$ epochs, kept the final weight average without test-set checkpoint selection, and evaluated at native resolution (three seeds; Table~\ref{tab:std}). Our Polyp-PVT reproduction is within $1.1$~pp of its published scores on every set, which validates the pipeline. DANG matches it on Kvasir, ClinicDB, ColonDB and CVC-300 (all differences within $\pm1.1$~pp, not significant) and exceeds it on ETIS-LaribPolypDB by $5.5$~pp mDice ($p=0.026$) and $11.1$~pp BF1 ($p=0.007$; paired, $n=3$, uncorrected). ETIS, the set with the smallest and least textured lesions, is where the few-shot results predict an advantage.
+Our protocol trains on Kvasir only, so its numbers are not comparable with the literature, which trains on $900$ Kvasir and $550$ ClinicDB images. To link the two, we trained DANG and Polyp-PVT on this standard split for $50$ epochs, used the final moving-average weights without any checkpoint selection, and evaluated at native resolution with three seeds (Table~\ref{tab:std}). Our Polyp-PVT reproduction is within $1.1$~pp of its published scores on every test set, which validates the pipeline. DANG matches it on Kvasir, ClinicDB, ColonDB and CVC-300 (differences within $\pm1.1$~pp, not significant) and exceeds it on ETIS by $5.5$~pp mDice ($p=0.026$) and $11.1$~pp BF1 ($p=0.007$). These two tests are paired over three seeds and uncorrected, and ETIS was among the cohorts inspected during design (Section~\ref{sec:limits}); the result is consistent with, but weaker evidence than, the five-seed results.
 
 \begin{table}[!t]
   \centering
-  \caption{\textbf{Standard PraNet training split (1,450 images), mDice (\%) at native resolution.} Mean $\pm$ SD over $3$ seeds for our runs; published Polyp-PVT scores from~\citet{dong2021polyp}.}
+  \caption{\textbf{Standard training split ($1{,}450$ images).} mDice (\%) at native resolution and ETIS BF1; mean $\pm$ SD over $3$ seeds for our runs. Published Polyp-PVT scores from~\citet{dong2021polyp}. \textbf{Bold}: better of our two runs.}
   \label{tab:std}
   \vspace{2pt}
-  \setlength{\tabcolsep}{3pt}\resizebox{\columnwidth}{!}{%
-  \begin{tabular}{l ccccc}
+  \setlength{\tabcolsep}{2.5pt}\resizebox{\columnwidth}{!}{%
+  \begin{tabular}{l cccccc}
     \toprule
-    \textbf{Model} & Kvasir & ClinicDB & ColonDB & ETIS & CVC-300 \\
+    & \multicolumn{5}{c}{\textbf{mDice}} & \textbf{BF1} \\
+    \cmidrule(lr){2-6} \cmidrule(lr){7-7}
+    \textbf{Model} & Kvasir & ClinicDB & ColonDB & ETIS & CVC-300 & ETIS \\
     \midrule
-    Polyp-PVT (published) & 91.7 & 93.7 & 80.8 & 78.7 & 90.0 \\
-    Polyp-PVT (ours) & $\mathbf{92.2}_{\pm 0.6}$ & $92.6_{\pm 0.3}$ & $\mathbf{80.6}_{\pm 0.7}$ & $78.9_{\pm 1.2}$ & $89.9_{\pm 0.2}$ \\
-    DANG & $91.9_{\pm 0.3}$ & $\mathbf{93.7}_{\pm 0.7}$ & $80.2_{\pm 0.9}$ & $\mathbf{84.4}_{\pm 0.4}$ & $\mathbf{90.8}_{\pm 1.1}$ \\
+    Polyp-PVT (published) & 91.7 & 93.7 & 80.8 & 78.7 & 90.0 & -- \\
+    Polyp-PVT (ours) & $\mathbf{92.2}_{\pm 0.6}$ & $92.6_{\pm 0.3}$ & $\mathbf{80.6}_{\pm 0.7}$ & $78.9_{\pm 1.2}$ & $89.9_{\pm 0.2}$ & $56.8_{\pm 1.6}$ \\
+    DANG & $91.9_{\pm 0.3}$ & $\mathbf{93.7}_{\pm 0.7}$ & $80.2_{\pm 0.9}$ & $\mathbf{84.4}_{\pm 0.4}$ & $\mathbf{90.8}_{\pm 1.1}$ & $\mathbf{67.9}_{\pm 0.1}$ \\
     \bottomrule
   \end{tabular}%
   }
@@ -215,90 +247,54 @@ Our protocol trains on Kvasir only, so its numbers are not comparable to the lit
 
 \subsection{Where the gain comes from}
 \label{sec:ablation}
+The in-house rows of Table~\ref{tab:sota} isolate the components; Appendix~\ref{app:ablation} gives the paired differences (Table~\ref{tab:diff}) and per-seed plots (Figures~\ref{fig:multiseed} and~\ref{fig:deltas}).
 
-\begin{table*}[!t]
-  \centering
-  \caption{\textbf{Ablation over five paired seeds (mean $\pm$ SD).} (B) ConvNeXt-T + FPN; (S) dual-stream control with the same frozen DINOv2 and adapters, fused by concatenation into an FPN; (C) DANG without the Retinex stem and style calibration; (F) full DANG. Difference rows give the paired mean difference and the $p$-value of a paired $t$-test ($n=5$); \textbf{bold} differences remain significant after Holm correction over the $12$ columns. HD95 in pixels; PGen-Ext is the PolypGen extended holdout.}
-  \label{tab:multiseed}
-  \vspace{2pt}
-  \setlength{\tabcolsep}{3pt}\resizebox{\textwidth}{!}{%
-  \begin{tabular}{l ccc ccc ccc ccc}
-    \toprule
-    & \multicolumn{3}{c}{\textbf{$S_1 \times S_2$ tiny/camo ($310$)}} & \multicolumn{3}{c}{\textbf{$S_1 \times S_3$ adverse ($258$)}} & \multicolumn{3}{c}{\textbf{$S_1 \to$ PraNet-Ext ($696$)}} & \multicolumn{3}{c}{\textbf{Full ($n=800$), mDice}} \\
-    \cmidrule(lr){2-4} \cmidrule(lr){5-7} \cmidrule(lr){8-10} \cmidrule(lr){11-13}
-    \textbf{Model} & mDice$\uparrow$ & BF1$\uparrow$ & HD95$\downarrow$ & mDice$\uparrow$ & BF1$\uparrow$ & HD95$\downarrow$ & mDice$\uparrow$ & BF1$\uparrow$ & HD95$\downarrow$ & ETIS$\uparrow$ & PraNet-Ext$\uparrow$ & PGen-Ext$\uparrow$ \\
-    \midrule
-    (B) Baseline & $44.74_{\pm 3.79}$ & $16.22_{\pm 3.87}$ & $72.76_{\pm 8.85}$ & $45.59_{\pm 4.02}$ & $15.23_{\pm 1.97}$ & $87.18_{\pm 1.61}$ & $66.59_{\pm 3.84}$ & $28.45_{\pm 4.82}$ & $58.76_{\pm 14.41}$ & $72.55_{\pm 2.68}$ & $78.66_{\pm 1.55}$ & $78.71_{\pm 0.76}$ \\
-    (S) Concatenation & $44.92_{\pm 0.82}$ & $16.59_{\pm 2.50}$ & $75.55_{\pm 5.48}$ & $46.33_{\pm 1.85}$ & $16.40_{\pm 1.61}$ & $88.21_{\pm 5.20}$ & $67.23_{\pm 1.15}$ & $29.20_{\pm 4.19}$ & $63.27_{\pm 9.45}$ & $72.95_{\pm 3.85}$ & $79.73_{\pm 1.04}$ & $79.35_{\pm 1.43}$ \\
-    (C) No stem & $50.06_{\pm 1.36}$ & $27.37_{\pm 1.64}$ & $65.76_{\pm 3.04}$ & $\mathbf{57.24}_{\pm 2.03}$ & $25.64_{\pm 1.10}$ & $\mathbf{71.42}_{\pm 2.40}$ & $71.55_{\pm 0.76}$ & $40.36_{\pm 1.05}$ & $\mathbf{49.34}_{\pm 1.12}$ & $77.49_{\pm 0.66}$ & $\mathbf{81.93}_{\pm 0.77}$ & $79.74_{\pm 0.71}$ \\
-    (F) \textbf{DANG} & $\mathbf{51.05}_{\pm 1.71}$ & $\mathbf{30.65}_{\pm 1.16}$ & $\mathbf{64.68}_{\pm 1.76}$ & $55.82_{\pm 1.17}$ & $\mathbf{27.17}_{\pm 1.72}$ & $78.74_{\pm 2.70}$ & $\mathbf{71.86}_{\pm 0.34}$ & $\mathbf{42.25}_{\pm 1.58}$ & $49.55_{\pm 2.73}$ & $\mathbf{78.88}_{\pm 1.50}$ & $81.82_{\pm 0.64}$ & $\mathbf{80.09}_{\pm 0.45}$ \\
-    \midrule
-    F $-$ B & $+6.31$ (.014) & $\mathbf{+14.44}$ (.002) & $-8.08$ (.135) & $\mathbf{+10.23}$ (.005) & $\mathbf{+11.95}$ (.002) & $\mathbf{-8.44}$ (.002) & $+5.27$ (.038) & $\mathbf{+13.80}$ (.007) & $-9.21$ (.258) & $\mathbf{+6.33}$ (.005) & $\mathbf{+3.16}$ (.003) & $\mathbf{+1.38}$ (.009) \\
-    C $-$ B & $+5.32$ (.017) & $\mathbf{+11.15}$ (.001) & $-7.01$ (.187) & $\mathbf{+11.65}$ (.003) & $\mathbf{+10.42}$ ($<$.001) & $\mathbf{-15.76}$ ($<$.001) & $+4.95$ (.037) & $\mathbf{+11.91}$ (.003) & $-9.42$ (.207) & $+4.94$ (.019) & $+3.28$ (.019) & $+1.03$ (.127) \\
-    F $-$ C & $+0.99$ (.218) & $+3.29$ (.022) & $-1.08$ (.551) & $-1.42$ (.112) & $+1.53$ (.225) & $+7.32$ (.012) & $+0.32$ (.489) & $+1.89$ (.152) & $+0.20$ (.897) & $+1.39$ (.106) & $-0.11$ (.847) & $+0.35$ (.471) \\
-    \bottomrule
-  \end{tabular}%
-  }
-\end{table*}
+\paragraph{Frozen features alone do not explain the gain.} The concatenation control has the same frozen DINOv2 and adapters as DANG and $120$M parameters, yet with $40$ labels it stays at the level of the $31$M-parameter baseline ($44.9\%$ vs.\ $44.7\%$ on tiny/camouflaged, $46.3\%$ vs.\ $45.6\%$ on adverse). DANG exceeds it by $6.1$~pp ($p=0.003$) and $9.5$~pp ($p<0.001$) mDice on these cohorts and by $14.1$~pp BF1 on tiny/camouflaged lesions, all significant after correction. The gain therefore lies in the components that consume the features, the prototype head, PASSE and the strip decoder together with the prototype loss. Because the control also uses a simpler decoder, this comparison does not isolate any single component.
 
-\begin{figure*}[!t]
-  \centering
-  \includegraphics[width=\linewidth]{figs/multiseed_benchmarks.pdf}
-  \caption{\textbf{The prototype/PASSE path, not the second backbone alone, carries the gain.} \textbf{(a)}~mDice and \textbf{(b)}~Boundary F1 for the four models of Table~\ref{tab:multiseed}. Large dots and printed values are means over $5$ seeds, horizontal lines are $95\%$ $t$-intervals of the mean, and faint dots are individual seeds. The concatenation control (orange) stays at baseline level in the few-shot cohorts, while both models with the prototype head and PASSE (blue) separate from it. $S_1$ cohorts are trained on $40$ Kvasir images, Full cohorts on $800$.}
-  \label{fig:multiseed}
-\end{figure*}
+\paragraph{Gains over the baseline.} With $40$ labels, DANG raises BF1 by $11.9$--$14.4$~pp on all three external cohorts and mDice on the adverse cohort by $10.2$~pp, all significant after correction; the $6.3$~pp tiny/camouflaged mDice gain is not ($p=0.014$, adjusted $0.055$). With $800$ labels DANG gains $6.3$~pp on ETIS and $3.2$~pp on PraNet-Ext, and on the adverse cohort mDice rises from $55.8\%$ for the baseline to $67.4\%$ (Figure~\ref{fig:multiseed}). In-domain accuracy is unchanged ($92.95\%$ vs.\ $92.92\%$ on Kvasir test). On the held-out PolypGen-Ext the gain is smaller but significant ($+1.4$~pp, $p=0.009$; $+1.2$~pp micro-averaged on PolypGen-Ext-SD, $p=0.004$).
 
-\begin{figure*}[!t]
-  \centering
-  \includegraphics[width=\linewidth]{figs/multiseed_deltas.pdf}
-  \caption{\textbf{Removing the Retinex stem and style calibration costs nothing, and helps on NBI.} \textbf{(a)}~Paired mDice difference to the baseline for DANG with and without the stem. \textbf{(b)}~Paired difference between the two, i.e.\ the contribution of the stem and style calibration. Points are means over $5$ paired seeds; bars are $95\%$ $t$-intervals of the paired difference. In (b) the one interval excluding zero (NBI spectral shift, $-4.32$~pp, $p=0.008$) is a loss; no difference survives Holm correction. PolypGen-Ext uses the sequence-disjoint subset ($n=900$).}
-  \label{fig:deltas}
-\end{figure*}
-
-Table~\ref{tab:multiseed} and Figures~\ref{fig:multiseed}--\ref{fig:deltas} isolate the components.
-
-\paragraph{Foundation features alone do not help.} The concatenation control (S) has the same frozen DINOv2, the same adapters and nearly the same size as DANG ($120$M parameters), yet in the few-shot regime it is indistinguishable from the 31M-parameter baseline ($44.9\%$ vs.\ $44.7\%$ on $S_1\times S_2$, $46.3\%$ vs.\ $45.6\%$ on $S_1\times S_3$). DANG, with $10$M more parameters, gains $6.1$~pp ($p=0.003$) and $9.5$~pp ($p<0.001$) over the control on these cohorts and $14.1$~pp BF1 on tiny/camouflaged lesions. Parameter count therefore does not explain DANG's advantage; the prototype, PASSE and strip-decoder path does.
-
-\paragraph{Gains over the baseline.} DANG raises few-shot BF1 by $11.9$--$14.4$~pp on all three cohorts and mDice on adverse acquisitions by $10.2$~pp, all significant after correction. With full data it gains $6.3$~pp on ETIS and $3.2$~pp on the PraNet external sets while in-domain accuracy is unchanged ($92.95\%$ vs.\ $92.92\%$ on Kvasir test). On the untouched PolypGen extended holdout the gain is smaller but significant ($+1.4$~pp, $p=0.009$; $+1.2$~pp on the subset that shares no video sequence with the development set, $p=0.004$). Full-data $S_3$ mDice rises from $55.8\%$ to $67.4\%$, most on low-light ($+18.7$~pp) and combined-severe frames ($+23.0$~pp).
-
-\paragraph{The stem is a negative result.} Removing the Retinex stem and style calibration (C) keeps almost all of the improvement, and no mDice difference between C and F survives correction. The only uncorrected mDice effect of the stem is a loss of $4.3$~pp on NBI frames ($p=0.008$). One plausible reason, which we did not test, is that the stem standardises colour towards white-light Kvasir statistics and so maps the green-dominant NBI palette onto a distribution the prototype head has not seen. We keep the full model as DANG for consistency with the main experiments, but recommend the stem-free variant for deployment.
-
-\paragraph{HD95.} An empty prediction receives a fixed HD95 penalty of $124.5$~px, which is smaller than the HD95 of $10.9\%$ of non-empty predictions, so an empty mask can score better than a mask with a distant false positive. Empty-prediction rates are similar for DANG and the baseline ($28.5\%$ vs.\ $27.8\%$ on $S_1\times S_2$). With larger penalties the direction of the HD95 differences holds but their size shrinks, and on two cohorts they are not significant even with the default penalty. We therefore base our claims on mDice and BF1.
+\paragraph{The stem shows no measurable gain.} Removing the Retinex stem and style calibration keeps almost all of the improvement, and no difference between DANG and its stem-free variant survives correction. Uncorrected, the stem costs $4.3$~pp mDice on NBI-shifted frames ($p=0.008$) and adds $3.3$~pp BF1 on tiny/camouflaged lesions ($p=0.022$). A plausible reason for the NBI loss, which we did not test, is that the stem standardises colour towards white-light Kvasir statistics. We report the full model as DANG because all main experiments use it, but recommend the stem-free variant, which is also faster.
 
 \subsection{Efficiency}
-DANG is the most expensive model in Table~\ref{tab:sota}: $129.9$M parameters, of which $86.6$M are frozen DINOv2 weights and $43.3$M are trained, and $17.4$~FPS against $36.5$--$42.4$~FPS for the retrained models and $91.9$~FPS for the ConvNeXt baseline. The concatenation control, which runs the same two encoders, reaches $38.4$~FPS, so most of DANG's extra latency lies in the decoding path (prototype head, PASSE, strip fusion and decoder) rather than in the foundation model. Removing the stem raises throughput to $19.3$~FPS. At $17$~FPS DANG suits second-reader and offline review; real-time use at $25$--$30$~Hz needs a faster GPU, an optimised implementation of the decoding path, or distillation into a smaller network~\citep{agnihotri2025difom,agnihotri2026litepi}. For reference, SAM-based polyp models are larger still (about $103$M parameters and $423$~GFLOPs~\citep{agnihotri2026litebound}).
+DANG is the most expensive model in Table~\ref{tab:sota}: $129.9$M parameters, of which $86.6$M are frozen DINOv2 weights, and $17.4$~FPS against $36.5$--$42.4$~FPS for the retrained models. The concatenation control runs the same two encoders at $38.4$~FPS, so most of DANG's extra latency lies in its decoding path rather than in the foundation model. At $17$--$19$~FPS DANG suits second-reader and offline review. Real-time use at $25$--$30$~Hz would need a faster GPU, an optimised decoding path, or distillation into a smaller network~\citep{agnihotri2025difom,agnihotri2026litepi}.
 
 \section{Limitations}
+\label{sec:limits}
 \begin{enumerate}
-  \item \textbf{Training length of the retrained baselines.} In the few-shot track, the retrained models reached their best validation score in the last $5$ of $40$ epochs, so they may not have converged; DANG peaked between epochs $25$ and $39$. Longer training could narrow the few-shot gap.
-  \item \textbf{Fixed few-shot subset and single source centre.} The $40$-image subset is the same for all seeds, so the variance in Table~\ref{tab:sota} reflects optimisation, not the choice of images. All main models are trained on Kvasir only.
-  \item \textbf{Adaptive design.} PASSE thresholds and loss radii were tuned while inspecting PolypGen-Dev, $S_2$, $S_3$ and ETIS, so these cohorts are not fully held out. The extended PolypGen holdout was not used for design, and the gains there are smaller.
-  \item \textbf{Synthetic and derived cohorts.} $S_3$ is synthetic, not paired physical NBI/white-light acquisitions, and $S_2$ and $S_3$ are slices of the external cohorts.
-  \item \textbf{Statistical power.} Five seeds give four degrees of freedom and the standard-split experiment three seeds; several raw $p<0.05$ effects do not survive correction.
-  \item \textbf{Confounded prototype loss.} Models with the prototype head also receive $\mathcal{L}_{\text{proto}}$, so their gains reflect both, and we have not run a full factorial over PASSE, the prototype loss and the strip decoder.
+  \item \textbf{Training length of the retrained models.} With $40$ labels the retrained models reached their best validation score in the last $5$ of $40$ epochs and may not have converged; DANG peaked between epochs $25$ and $39$. Longer training could narrow the gap.
+  \item \textbf{One subset, one source centre.} The $40$-image subset is the same for all seeds, so the reported variance reflects optimisation, not the choice of images; all main models are trained on Kvasir only.
+  \item \textbf{Adaptive design.} PASSE thresholds and loss constants were tuned while inspecting PolypGen-Dev, ETIS and the two stress cohorts, so these are not fully held out; this includes ETIS, the cohort of the standard-split result. PolypGen-Ext was not used for design, and gains there are smaller.
+  \item \textbf{Shared sequences.} $74$ PolypGen-Ext frames share video sequences with PolypGen-Dev; PolypGen-Ext-SD removes them.
+  \item \textbf{Synthetic and derived cohorts.} The adverse cohort is synthetic rather than paired physical NBI/white-light acquisitions, and both stress cohorts are slices of the external cohorts.
+  \item \textbf{Statistical power.} Five seeds give four degrees of freedom and the standard-split experiment three; several raw $p<0.05$ effects do not survive correction.
+  \item \textbf{Confounded prototype loss.} Models with the prototype head also receive $\mathcal{L}_{\text{proto}}$, and we have not run a factorial over PASSE, the prototype loss and the strip decoder.
+  \item \textbf{Scope.} We evaluate single frames, not video, and report no clinical reader study.
   \item \textbf{Cost.} DANG is $2$--$2.5\times$ slower than the retrained models and has $4$--$5\times$ more parameters.
 \end{enumerate}
 
+\section{Conclusion}
+DANG uses a frozen DINOv2 through a prototype margin head, a prototype-anchored support envelope and an uncertainty-guided strip decoder. Trained on $40$ labelled images it outperforms PraNet, Polyp-PVT and EMCAD retrained under the same protocol on every external cohort, by at least $7.1$~pp mDice and $4.8$~pp BF1 over the best of them, and on the standard split it matches Polyp-PVT on four test sets and exceeds it on ETIS. A same-size concatenation control shows that the frozen features alone do not explain the gain. With $800$ labels DANG ties the best retrained models, and it is $2$--$2.5\times$ slower. Next steps are longer training of the baselines in the label-scarce regime, resampled subsets, a lighter backbone and decoding path, and evaluation on physical NBI acquisitions and video.
+
+\section*{Declarations}
 \paragraph{Ethics and data.} No new patient data were collected. All experiments use public, de-identified datasets (Kvasir-SEG~\citep{jha2020kvasir}, PolypGen~\citep{ali2023polypgen}, CVC-ClinicDB, CVC-ColonDB~\citep{tajbakhsh2015automated}, CVC-300 and ETIS-LaribPolypDB~\citep{silva2014toward}) under their research licences.
 
-\paragraph{Reproducibility and AI assistance.} Code, deduplication manifests, per-image evaluation logs and the scripts that regenerate every table and figure from the raw logs will be released. AI agents assisted with experiment orchestration, log aggregation, figure generation and drafting (Google Gemini; Claude Opus 5.5, Anthropic), and independent agents (Codex, OpenAI; Claude Sonnet 4.6 and Claude Opus 5.5, Anthropic) audited the aggregations, code-to-equation consistency and statistics. The authors take responsibility for all content.
+\paragraph{Code availability.} Code, deduplication manifests, per-image evaluation logs and the scripts that regenerate every table and figure from the raw logs will be released.
 
-\section{Conclusion}
-DANG uses a frozen DINOv2 through a prototype margin head, a prototype-anchored support envelope and an uncertainty-guided strip decoder. When labels are scarce it outperforms PraNet, Polyp-PVT and EMCAD retrained under the same protocol, by up to $16.6$~pp mDice and $20.8$~pp BF1 over the strongest of them, and on the standard split it matches Polyp-PVT on four test sets and exceeds it on ETIS. A same-size concatenation control shows that the gain comes from how the foundation features are used, not from their parameters. With abundant labels DANG ties the best retrained models, and it is $2$--$2.5\times$ slower. Next steps are longer few-shot training of the baselines, resampled few-shot subsets, a lighter backbone and an optimised decoding path, and evaluation on physical NBI acquisitions.
+\paragraph{AI assistance.} AI agents assisted with experiment orchestration, log aggregation, figure generation and drafting (Google Gemini; Claude Opus 5.5, Anthropic), and independent agents (Codex, OpenAI; Claude Sonnet 4.6 and Claude Opus 5.5, Anthropic) audited the aggregations, code-to-equation consistency, statistics and writing. The authors take responsibility for all content.
 
-\begin{thebibliography}{30}
+\begin{thebibliography}{40}
 
-\bibitem[Agnihotri et al.(2025)]{agnihotri2025difom}
+\bibitem[Agnihotri et al.(2026a)]{agnihotri2025difom}
 S.~Agnihotri, S.~Majhi, D.~R.~Nayak, and D.~Jha.
 \newblock From SAM to DINOv2: Towards distilling foundation models to lightweight baselines for generalized polyp segmentation.
 \newblock In \emph{WACV}, 2026. arXiv:2512.09307.
 
-\bibitem[Agnihotri et al.(2026a)]{agnihotri2026litebound}
+\bibitem[Agnihotri et al.(2026b)]{agnihotri2026litebound}
 S.~Agnihotri, S.~Majhi, and D.~R.~Nayak.
 \newblock Sharpening lightweight models for generalized polyp segmentation: A boundary guided distillation from foundation models.
 \newblock \emph{arXiv preprint arXiv:2604.17865}, 2026.
 
-\bibitem[Agnihotri et al.(2026b)]{agnihotri2026litepi}
+\bibitem[Agnihotri et al.(2026c)]{agnihotri2026litepi}
 S.~Agnihotri, S.~Majhi, D.~R.~Nayak, D.~Mahapatra, and D.~Jha.
 \newblock Induce to empower: Improving lightweight baselines via foundation model induction for generalized polyp segmentation.
 \newblock \emph{arXiv preprint arXiv:2607.17208}, 2026.
@@ -307,6 +303,11 @@ S.~Agnihotri, S.~Majhi, D.~R.~Nayak, D.~Mahapatra, and D.~Jha.
 S.~Ali et al.
 \newblock A multi-centre polyp detection and segmentation dataset for generalisability assessment.
 \newblock \emph{Scientific Data}, 10(1):75, 2023.
+
+\bibitem[Csurka et al.(2013)]{csurka2013good}
+G.~Csurka, D.~Larlus, and F.~Perronnin.
+\newblock What is a good evaluation measure for semantic segmentation?
+\newblock In \emph{BMVC}, 2013.
 
 \bibitem[Dong et al.(2021)]{dong2021polyp}
 B.~Dong, W.~Wang, D.-P.~Fan, J.~Li, H.~Fu, and L.~Shao.
@@ -328,10 +329,25 @@ D.-P.~Fan, G.-P.~Ji, T.~Zhou, G.~Chen, H.~Fu, J.~Shen, and L.~Shao.
 \newblock PraNet: Parallel reverse attention network for polyp segmentation.
 \newblock In \emph{MICCAI}, pages 263--273, 2020.
 
+\bibitem[Fan et al.(2022)]{fan2022ssp}
+Q.~Fan, W.~Pei, Y.-W.~Tai, and C.-K.~Tang.
+\newblock Self-support few-shot semantic segmentation.
+\newblock In \emph{ECCV}, 2022.
+
 \bibitem[Gu and Dao(2023)]{gu2023mamba}
 A.~Gu and T.~Dao.
 \newblock Mamba: Linear-time sequence modeling with selective state spaces.
 \newblock \emph{arXiv preprint arXiv:2312.00752}, 2023.
+
+\bibitem[Hendrycks and Dietterich(2019)]{hendrycks2019benchmarking}
+D.~Hendrycks and T.~Dietterich.
+\newblock Benchmarking neural network robustness to common corruptions and perturbations.
+\newblock In \emph{ICLR}, 2019.
+
+\bibitem[Holm(1979)]{holm1979simple}
+S.~Holm.
+\newblock A simple sequentially rejective multiple test procedure.
+\newblock \emph{Scandinavian Journal of Statistics}, 6(2):65--70, 1979.
 
 \bibitem[Hu et al.(2022)]{hu2022lora}
 E.~J.~Hu et al.
@@ -373,7 +389,12 @@ A.~Lou, S.~Guan, H.~Ko, and M.~H.~Loew.
 \newblock CaraNet: Context axial reverse attention network for segmentation of small medical objects.
 \newblock In \emph{SPIE Medical Imaging}, 2022.
 
-\bibitem[Ma et al.(2024)]{ma2024umamba}
+\bibitem[Ma et al.(2024a)]{ma2024medsam}
+J.~Ma, Y.~He, F.~Li, L.~Han, C.~You, and B.~Wang.
+\newblock Segment anything in medical images.
+\newblock \emph{Nature Communications}, 15:654, 2024.
+
+\bibitem[Ma et al.(2024b)]{ma2024umamba}
 J.~Ma, F.~Li, and B.~Wang.
 \newblock U-Mamba: Enhancing long-range dependency for biomedical image segmentation.
 \newblock \emph{arXiv preprint arXiv:2401.04722}, 2024.
@@ -403,20 +424,50 @@ J.~Silva, A.~Histace, O.~Romain, X.~Dray, and B.~Granado.
 \newblock Toward embedded detection of polyps in WCE images for early diagnosis of colorectal cancer.
 \newblock \emph{International Journal of Computer Assisted Radiology and Surgery}, 9(2):283--293, 2014.
 
+\bibitem[Sung et al.(2021)]{sung2021globocan}
+H.~Sung, J.~Ferlay, R.~L.~Siegel, M.~Laversanne, I.~Soerjomataram, A.~Jemal, and F.~Bray.
+\newblock Global cancer statistics 2020: GLOBOCAN estimates of incidence and mortality worldwide for 36 cancers in 185 countries.
+\newblock \emph{CA: A Cancer Journal for Clinicians}, 71(3):209--249, 2021.
+
 \bibitem[Tajbakhsh et al.(2016)]{tajbakhsh2015automated}
 N.~Tajbakhsh, S.~R.~Gurudu, and J.~Liang.
 \newblock Automated polyp detection in colonoscopy videos using shape and context information.
 \newblock \emph{IEEE Transactions on Medical Imaging}, 35(2):630--644, 2016.
+
+\bibitem[Wang et al.(2019)]{wang2019panet}
+K.~Wang, J.~H.~Liew, Y.~Zou, D.~Zhou, and J.~Feng.
+\newblock PANet: Few-shot image semantic segmentation with prototype alignment.
+\newblock In \emph{ICCV}, 2019.
+
+\bibitem[Xi et al.(2025)]{xi2025fpgm}
+H.~Xi et al.
+\newblock Frequency prior guided matching: A data augmentation approach for generalizable semi-supervised polyp segmentation.
+\newblock \emph{arXiv preprint arXiv:2508.06517}, 2025.
+
+\bibitem[Zauber et al.(2012)]{zauber2012polypectomy}
+A.~G.~Zauber et al.
+\newblock Colonoscopic polypectomy and long-term prevention of colorectal-cancer deaths.
+\newblock \emph{New England Journal of Medicine}, 366(8):687--696, 2012.
 
 \bibitem[Zhang et al.(2021)]{zhang2021transfuse}
 Y.~Zhang, H.~Liu, and Q.~Hu.
 \newblock TransFuse: Fusing transformers and CNNs for medical image segmentation.
 \newblock In \emph{MICCAI}, pages 14--24, 2021.
 
+\bibitem[Zhong et al.(2024)]{zhong2024convlora}
+Z.~Zhong, Z.~Tang, T.~He, H.~Fang, and C.~Yuan.
+\newblock Convolution meets LoRA: Parameter efficient finetuning for segment anything model.
+\newblock In \emph{ICLR}, 2024.
+
 \bibitem[Zhou et al.(2021)]{zhou2021mixstyle}
 K.~Zhou, Y.~Yang, Y.~Qiao, and T.~Xiang.
 \newblock Domain generalization with MixStyle.
 \newblock In \emph{ICLR}, 2021.
+
+\bibitem[Zhou et al.(2023)]{zhou2023samPolyps}
+T.~Zhou, Y.~Zhang, Y.~Zhou, Y.~Wu, and C.~Gong.
+\newblock Can SAM segment polyps?
+\newblock \emph{arXiv preprint arXiv:2304.07583}, 2023.
 
 \bibitem[Zhou et al.(2018)]{zhou2018unetplusplus}
 Z.~Zhou, M.~M.~R.~Siddiquee, N.~Tajbakhsh, and J.~Liang.
@@ -424,5 +475,87 @@ Z.~Zhou, M.~M.~R.~Siddiquee, N.~Tajbakhsh, and J.~Liang.
 \newblock In \emph{DLMIA / MICCAI Workshops}, pages 3--11, 2018.
 
 \end{thebibliography}
+
+\clearpage
+\appendix
+\onecolumn
+
+\section{Implementation details}
+\label{app:impl}
+
+\begin{table}[h]
+  \centering
+  \caption{\textbf{Hyperparameters.} Lesion area $a$ is the ground-truth foreground percentage of the image.}
+  \label{tab:impl}
+  \small
+  \begin{tabular}{@{}l p{0.8\linewidth}@{}}
+    \toprule
+    \textbf{Item} & \textbf{Setting} \\
+    \midrule
+    Backbones & ConvNeXt-Tiny (ImageNet-22k, fine-tuned on ImageNet-1k at $384$); DINOv2-Base (LVD-142M), frozen \\
+    Adapters & convolutional LoRA, rank $4$, on DINOv2 blocks $8$--$11$ \\
+    Optimiser & AdamW; learning rate $1.6\times10^{-4}$ (CNN), $4\times10^{-4}$ (new modules), $10^{-3}$ (adapters) \\
+    Weight decay & $10^{-4}$; none on normalisation, bias, adapter and prototype parameters \\
+    Schedule & linear warm-up ($3$ epochs with $40$ labels, $2$ with $800$), then cosine decay to $5\%$ \\
+    Epochs, batch & $40$ ($40$ labels), $20$ ($800$ labels), $50$ (standard split); batch size $16$ \\
+    Weight averaging & EMA with decay $\min(0.992,\,(1+t)/(10+t))$ at step $t$ \\
+    Other & gradient-norm clipping at $3.0$; FP16 on T4, BF16 on newer GPUs \\
+    Augmentation & scale $0.65$--$0.90$ ($p=0.3$) or $0.95$--$1.20$ with crop or pad; horizontal and vertical flips ($p=0.5$ each); $90^\circ$ rotations ($p=0.5$); brightness, contrast, saturation $\pm15\%$ ($p=0.4$); hue $\pm0.04$ ($p=0.3$); gamma $0.8$--$1.25$ ($p=0.3$) \\
+    \midrule
+    Image weight & $w=\mathrm{clip}\bigl((3/(a+0.35))^{0.4},\,1,\,2.4\bigr)$, normalised to mean $1$ in the batch \\
+    Tversky & false-positive weight $0.45+0.15\,\sigma((a-1.5)/0.5)$, false-negative weight $1$ minus it \\
+    Far-field loss & mean probability outside the ground truth dilated by $4$, $8$, $14$ and $20$ pixels \\
+    Prototype head & $K=8+8$ prototypes, dimension $128$; $\beta=6$; $\tau$ learned, initialised at $12$ and clamped to $[4,25]$ \\
+    & $w_{\text{a}}=10\cdot\tfrac12\tanh(\theta_{\text{a}})$, $w_{\text{ss}}=8\cdot\tfrac12\tanh(\theta_{\text{ss}})$ with learned $\theta$ \\
+    Anchors & momentum $0.95$; foreground where pooled mask $\ge0.35$, background where $\le0.10$ \\
+    PASSE & $t_{\text{out}}=0.22$, $\lambda_{\text{out}}=10$, $t_{\text{in}}=0.38$, $\lambda_{\text{in}}=1.2$ \\
+    \midrule
+    Adverse cohort & NBI: fixed linear colour mixing that attenuates red; low light: gamma $2.55$, gain $0.45$, radial vignette, Gaussian noise (SD $0.035$); glare and blur: Gaussian blur (radius $3.2$), contrast $\times0.55$, four specular spots; combined: all three with milder low light (gamma $2.15$) and blur (radius $2.2$) \\
+    Camouflaged lesion & area $<3\%$ and colour distance $<0.085$ between $3$-pixel bands inside and outside the boundary \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Ablation details}
+\label{app:ablation}
+
+\begin{table}[h]
+  \centering
+  \caption{\textbf{Paired differences between in-house models}, five seeds; $p$-value of a two-sided paired $t$-test in parentheses. \textbf{Bold}: significant after Holm correction over the $12$ columns of the row. B: ConvNeXt-T + FPN; S: concatenation control; C: DANG without stem; F: DANG. HD95 in pixels at $352\times352$ (lower is better).}
+  \label{tab:diff}
+  \vspace{2pt}
+  \setlength{\tabcolsep}{2.5pt}\resizebox{\textwidth}{!}{%
+  \begin{tabular}{l ccc ccc ccc ccc}
+    \toprule
+    & \multicolumn{3}{c}{\textbf{$40\to$ Tiny/camouflaged}} & \multicolumn{3}{c}{\textbf{$40\to$ Adverse}} & \multicolumn{3}{c}{\textbf{$40\to$ PraNet-Ext}} & \multicolumn{3}{c}{\textbf{$800\to$, mDice}} \\
+    \cmidrule(lr){2-4} \cmidrule(lr){5-7} \cmidrule(lr){8-10} \cmidrule(lr){11-13}
+    & mDice & BF1 & HD95 & mDice & BF1 & HD95 & mDice & BF1 & HD95 & ETIS & PraNet-Ext & PolypGen-Ext \\
+    \midrule
+    F$-$B & $+6.3$ (.014) & $\mathbf{+14.4}$ (.002) & $-8.1$ (.135) & $\mathbf{+10.2}$ (.005) & $\mathbf{+11.9}$ (.002) & $\mathbf{-8.4}$ (.002) & $+5.3$ (.038) & $\mathbf{+13.8}$ (.007) & $-9.2$ (.258) & $\mathbf{+6.3}$ (.005) & $\mathbf{+3.2}$ (.003) & $\mathbf{+1.4}$ (.009) \\
+    F$-$S & $\mathbf{+6.1}$ (.003) & $\mathbf{+14.1}$ ($<$.001) & $-10.9$ (.017) & $\mathbf{+9.5}$ ($<$.001) & $\mathbf{+10.8}$ (.001) & $\mathbf{-9.5}$ (.004) & $\mathbf{+4.6}$ (.002) & $\mathbf{+13.0}$ (.004) & $-13.7$ (.040) & $+5.9$ (.016) & $\mathbf{+2.1}$ (.002) & $+0.7$ (.347) \\
+    C$-$B & $+5.3$ (.017) & $\mathbf{+11.1}$ (.001) & $-7.0$ (.187) & $\mathbf{+11.7}$ (.003) & $\mathbf{+10.4}$ ($<$.001) & $\mathbf{-15.8}$ ($<$.001) & $+5.0$ (.037) & $\mathbf{+11.9}$ (.003) & $-9.4$ (.207) & $+4.9$ (.019) & $+3.3$ (.019) & $+1.0$ (.127) \\
+    F$-$C & $+1.0$ (.218) & $+3.3$ (.022) & $-1.1$ (.551) & $-1.4$ (.112) & $+1.5$ (.225) & $+7.3$ (.012) & $+0.3$ (.489) & $+1.9$ (.152) & $+0.2$ (.896) & $+1.4$ (.106) & $-0.1$ (.847) & $+0.4$ (.471) \\
+    \bottomrule
+  \end{tabular}%
+  }
+\end{table}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.85\linewidth]{figs/multiseed_benchmarks.pdf}
+  \caption{\textbf{In-house models per seed.} \textbf{(a)}~mDice and \textbf{(b)}~BF1. Large dots and printed values are means over $5$ seeds, horizontal lines are $95\%$ $t$-intervals of the mean, faint dots are individual seeds. The concatenation control (orange) stays at baseline level with $40$ labels, while both models with the prototype head and PASSE (blue) separate from it.}
+  \label{fig:multiseed}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.85\linewidth]{figs/multiseed_deltas.pdf}
+  \caption{\textbf{Contribution of the Retinex stem and style calibration.} \textbf{(a)}~Paired mDice difference to the baseline for DANG with and without the stem. \textbf{(b)}~Paired difference between the two. Points are means over $5$ paired seeds; bars are $95\%$ $t$-intervals. In (b) the one interval excluding zero is a $4.3$~pp loss on NBI frames ($p=0.008$); no difference in (b) survives Holm correction over its $13$ rows.}
+  \label{fig:deltas}
+\end{figure}
+
+\section{HD95 and empty predictions}
+\label{app:hd95}
+When a prediction is empty and the ground truth is not, HD95 is undefined; we assign a quarter of the image diagonal, $0.25\cdot352\sqrt2\approx124.5$~px. This penalty is smaller than the HD95 of $10.9\%$ of non-empty predictions, so an empty mask can score better than a mask with a distant false positive. Empty-prediction rates are similar for DANG and the baseline ($28.5\%$ vs.\ $27.8\%$ on $40\to$tiny/camouflaged). With half- or full-diagonal penalties the direction of the HD95 differences holds but their size shrinks, and on two cohorts they are not significant even with the default penalty (Table~\ref{tab:diff}). We therefore base our claims on mDice and BF1.
 
 \end{document}

@@ -116,12 +116,10 @@ def main():
     fig.subplots_adjust(left=0.035, right=0.995, top=0.94, bottom=0.075, wspace=0.06, hspace=0.42)
 
     img, mk = resize_pair(row["image"]["bytes"], mask)
-    show(axes[0, 0], img, mk, "Clean source frame", f"PolypGen-Dev, lesion {s3_area[uid]:.1f}% of FOV")
+    show(axes[0, 0], img, mk, "Clean source frame", f"PolypGen-Dev, lesion {s3_area[uid]:.1f}% of frame")
     for j, mode in enumerate(MODES, start=1):
         img, mk = resize_pair(corrupt(row["image"]["bytes"], mode=mode, seed_idx=idx), mask)
-        b = np.mean([SEEDS["baseline"][s][f"s1s3_{mode}"] for s in SEEDS["baseline"]])
-        f = np.mean([SEEDS["flagship"][s][f"s1s3_{mode}"] for s in SEEDS["flagship"]])
-        show(axes[0, j], img, mk, MODE_LABEL[mode], f"family mDice  B {b:.1f} | F {f:.1f}")
+        show(axes[0, j], img, mk, MODE_LABEL[mode], "")
 
     # ---- Row 2: natural S2 lesions, sampled at random (not curated) --------------------------------
     b_img, s2_order, s2_area = per_image(run_ids("baseline"), "s1_s2_tiny_camo")
@@ -144,10 +142,10 @@ def main():
             src = folder.replace("-LaribPolypDB", "-Larib")
         img, mk = resize_pair(img_b, mask)
         show(axes[1, j], img, mk, f"{kind}: {src}",
-             f"area {s2_area[u]:.2f}%   Dice  B {b_img[u]:.1f} | F {f_img[u]:.1f}")
+             f"lesion area {s2_area[u]:.2f}% of frame")
 
-    fig.text(0.012, 0.735, "S3 adverse (synthetic)", rotation=90, ha="center", va="center", fontsize=7)
-    fig.text(0.012, 0.27, "S2 tiny / camouflaged", rotation=90, ha="center", va="center", fontsize=7)
+    fig.text(0.012, 0.735, "Adverse (synthetic)", rotation=90, ha="center", va="center", fontsize=7)
+    fig.text(0.012, 0.27, "Tiny / camouflaged", rotation=90, ha="center", va="center", fontsize=7)
     fig.text(0.004, 0.985, "(a)", fontsize=8, fontweight="bold", va="top")
     fig.text(0.004, 0.50, "(b)", fontsize=8, fontweight="bold", va="top")
     # Photographs: PDF only; an SVG of this grid is several megabytes.

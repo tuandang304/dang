@@ -44,11 +44,11 @@ ARMS = [
 MODES = ["Adverse_NBI_Spectral", "Adverse_LowLight_Lumen", "Adverse_Specular_Glare_Blur", "Adverse_Combined_Severe"]
 # (row label, cohort tag in logs/zip, uid filter)
 STRATA = [
-    ("S2 tiny", "s1_s2_tiny_camo", lambda u: "S2_Tiny" in u),
-    ("S2 camouflaged", "s1_s2_tiny_camo", lambda u: "S2_Camouflaged" in u),
-    ("S3 NBI", "s1_s3_adverse", lambda u: "::Adverse_NBI_Spectral::" in u),
-    ("S3 low light", "s1_s3_adverse", lambda u: "::Adverse_LowLight_Lumen::" in u),
-    ("S3 combined", "s1_s3_adverse", lambda u: "::Adverse_Combined_Severe::" in u),
+    ("Tiny", "s1_s2_tiny_camo", lambda u: "S2_Tiny" in u),
+    ("Camouflaged", "s1_s2_tiny_camo", lambda u: "S2_Camouflaged" in u),
+    ("Adverse: NBI", "s1_s3_adverse", lambda u: "::Adverse_NBI_Spectral::" in u),
+    ("Adverse: low light", "s1_s3_adverse", lambda u: "::Adverse_LowLight_Lumen::" in u),
+    ("Adverse: combined", "s1_s3_adverse", lambda u: "::Adverse_Combined_Severe::" in u),
     ("ETIS", "s1_pranet_ext", lambda u: u.startswith("Ext_ETIS")),
 ]
 ZIP_TAG = {"s1_s2_tiny_camo": "s1/s2_tiny_camo", "s1_s3_adverse": "s1/s3_adverse", "s1_pranet_ext": "s1/pranet_ext"}
