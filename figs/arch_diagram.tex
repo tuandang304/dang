@@ -1,84 +1,108 @@
-% DANG-Med architecture. Compile: pdflatex figs/arch_diagram.tex (standalone, builds at full text width).
-\documentclass[border=2pt]{standalone}
+% DANG-Med architecture. Compile: pdflatex figs/arch_diagram.tex (standalone, built at full text width).
+% Thumbnails come from figs/arch_thumbs.py (a Kvasir test frame and its ground-truth mask, illustration only).
+\documentclass[border=1pt]{standalone}
 \usepackage{tikz}
-\usepackage{amsmath}
-\usetikzlibrary{arrows.meta, positioning, fit, backgrounds, calc, shapes.geometric}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usetikzlibrary{arrows.meta, positioning, fit, backgrounds, calc, shapes.geometric, shapes.misc}
 
 \definecolor{orxblue}{HTML}{0072B2}
+\definecolor{orxcyan}{HTML}{56B4E9}
 \definecolor{orxorange}{HTML}{E69F00}
-\definecolor{orxgreen}{HTML}{009E73}
-\definecolor{orxred}{HTML}{D55E00}
+\definecolor{ink}{HTML}{333333}
+
+% small snowflake marking frozen weights
+\newcommand{\frozen}{\tikz[baseline=-0.55ex]{\foreach \a in {0,60,120}{%
+  \draw[orxcyan!90!black, line width=0.5pt, line cap=round] (\a:0.85ex) -- (\a+180:0.85ex);}}}
 
 \tikzset{
   orx/.style={
-    font=\sffamily\footnotesize,
-    >={Stealth[round, length=4pt, width=3pt]},
-    line width=0.5pt,
-    node distance=5mm and 6mm,
+    font=\sffamily\footnotesize, text=ink,
+    >={Stealth[round, length=3.6pt, width=2.8pt]},
+    line width=0.55pt,
   },
   block/.style={
-    draw=black!55, fill=white, rounded corners=1pt,
-    minimum height=9mm, text width=19mm, inner sep=2pt, align=center,
+    draw=black!50, fill=white, rounded corners=2pt,
+    minimum height=10mm, text width=18mm, inner sep=1.8pt, align=center,
   },
-  ours/.style={block, draw=orxblue, fill=orxblue!8, line width=0.7pt},
-  muted/.style={block, draw=black!35, fill=black!4, text=black!70},
-  data/.style={
-    draw=black!45, fill=black!2, trapezium,
-    trapezium left angle=78, trapezium right angle=102,
-    minimum height=7mm, inner sep=2pt, align=center,
+  ours/.style={block, draw=orxblue, fill=orxblue!9, line width=0.75pt},
+  frozenblk/.style={block, draw=black!35, fill=black!6},
+  encoder/.style={
+    draw=black!50, fill=white, trapezium, shape border rotate=270,
+    trapezium left angle=72, trapezium right angle=72, trapezium stretches body,
+    minimum height=24mm, minimum width=13mm, inner sep=1pt, align=center,
   },
-  lane/.style={draw=black!20, dashed, rounded corners=2pt, inner sep=2.5pt},
-  lanelbl/.style={font=\sffamily\scriptsize, text=black!55},
-  flow/.style={->, draw=black!70},
-  cond/.style={->, densely dashed, draw=orxblue!80},
-  edgelbl/.style={font=\sffamily\scriptsize, text=black!70, inner sep=1.2pt},
+  img/.style={inner sep=0pt, draw=black!40, line width=0.4pt},
+  lane/.style={fill=black!3.5, draw=none, rounded corners=3pt, inner xsep=3pt, inner ysep=3pt},
+  lanelbl/.style={font=\sffamily\scriptsize\bfseries, text=black!55, inner sep=1pt},
+  flow/.style={->, draw=black!65},
+  cond/.style={->, densely dashed, draw=orxblue!85},
+  edgelbl/.style={font=\scriptsize, text=black!75, inner sep=1.2pt},
   sub/.style={font=\sffamily\scriptsize, text=black!60},
+  sumnode/.style={circle, draw=black!65, fill=white, inner sep=0pt, minimum size=4.2mm, font=\small},
 }
 
 \begin{document}
 \begin{tikzpicture}[orx]
 
-  % ---- inputs and stem
-  \node[data] (input) {RGB frame\\$352^2$};
-  \node[ours, right=5mm of input, text width=15mm] (stem) {Retinex\\chromatic stem};
+  % ---------------- input and stem
+  \node[img] (input) {\includegraphics[width=12.5mm]{arch_input.png}};
+  \node[sub, below=0.6mm of input] (inlbl) {$I\in\mathbb{R}^{3\times352^2}$};
+  \node[ours, right=3.5mm of input, text width=13.5mm] (stem) {Retinex\\chromatic\\stem};
 
-  % ---- two streams
-  \node[block, above right=4mm and 6mm of stem, text width=25mm] (cnn) {ConvNeXt-T\\{\scriptsize stages $s_4\!\ldots s_{32}$}};
-  \node[muted, below right=4mm and 6mm of stem, text width=25mm] (vit) {DINOv2-B, frozen\\{\scriptsize + Freq-MoE LoRA}};
+  % ---------------- two encoder streams
+  \coordinate[right=4mm of stem] (split);
+  \node[block, anchor=west, text width=20mm] (cnn) at ($(split)+(1.5mm,17.5mm)$)
+       {ConvNeXt-T\\[-0.5pt]{\scriptsize stages $s_4$--$s_{32}$}};
+  \node[frozenblk, anchor=west, text width=20mm] (vit) at ($(split)+(1.5mm,-17.5mm)$)
+       {DINOv2-B \frozen\\[-0.5pt]{\scriptsize Freq-MoE LoRA}};
 
-  \node[ours, right=6mm of cnn] (calib) {DINO style\\calibration {\scriptsize ($s_4,s_8$)}};
-  \node[ours, right=6mm of vit] (dpt) {4-scale DPT\\reassembler};
+  \node[ours, right=5mm of cnn, text width=18mm] (calib) {DINO style\\calibration\\[-0.5pt]{\scriptsize at $s_4,s_8$}};
+  \node[ours, right=5mm of vit, text width=18mm] (dpt) {4-scale DPT\\reassembler};
 
-  % ---- fusion and prototype head
-  \node[ours, right=of $(calib.east)!0.5!(dpt.east)$] (fuse) {Strip GD-SSA\\fusion {\scriptsize ($s_8..s_{32}$)}};
-  \node[ours, below=5mm of fuse |- dpt.south, anchor=north] (proto) {Dual-prototype\\+ self-support};
+  % ---------------- fusion, decoder, output (middle row)
+  \path (calib.east) -- (dpt.east) coordinate[pos=0.5] (mid);
+  \node[ours, right=7.5mm of mid, text width=18mm] (fuse) {Strip GD-SSA\\fusion\\[-0.5pt]{\scriptsize at $s_8,s_{16},s_{32}$}};
+  \node[ours, right=8.5mm of fuse, text width=20mm] (dec) {Uncertainty\\strip decoder\\[-0.5pt]{\scriptsize $U{=}4p(1{-}p)$}};
+  \node[sumnode, right=4.5mm of dec] (sum) {$+$};
+  \node[img, right=3.5mm of sum] (out) {\includegraphics[width=12.5mm]{arch_output.png}};
+  \node[sub, below=0.6mm of out] {$\hat Y=\sigma(Z)$};
 
-  \node[ours, right=6mm of fuse, text width=21mm] (dec) {Uncertainty strip\\decoder {\scriptsize $u{=}4p(1{-}p)$}};
-  \node[ours, anchor=north, text width=14mm] (passe) at (dec.south |- proto.north) {PASSE\\envelope};
-  \node[data, right=4mm of dec] (out) {Mask\\$352^2$};
+  % ---------------- prototype path (bottom row)
+  \node[ours, text width=20mm] (proto) at (fuse |- vit) {Dual-prototype\\+ self-support};
+  \node[ours, text width=20mm] (passe) at (dec |- vit) {PASSE\\support envelope};
 
-  % ---- edges
+  % ---------------- edges
   \draw[flow] (input) -- (stem);
-  \draw[flow] (stem.east) -- ++(2.5mm,0) |- (cnn.west);
-  \draw[flow] (stem.east) -- ++(2.5mm,0) |- (vit.west);
+  \draw[flow] (stem) -- (split) |- (cnn.west);
+  \draw[flow] (split) |- (vit.west);
   \draw[flow] (cnn) -- node[edgelbl, above] {$F_{\mathrm{loc}}$} (calib);
   \draw[flow] (vit) -- node[edgelbl, above] {$25^2$} (dpt);
-  \draw[cond] (vit.north) -- node[edgelbl, right, pos=0.5] {$g_{\mathrm{dino}}$} (vit.north |- calib.south) -- (calib.south west);
-  \draw[flow] (calib.east) -- ++(2.5mm,0) |- (fuse.west);
-  \draw[flow] (dpt.east) -- ++(2.5mm,0) |- node[edgelbl, pos=0.25, right] {$\hat S_s$} (fuse.west);
-  \draw[flow] (dpt.south) |- node[edgelbl, pos=0.75, below] {$[S_1,S_2,S_3]$} (proto.west);
+  \draw[cond] ($(vit.north east)+(-4mm,0)$) |- node[edgelbl, pos=0.75, above, text=orxblue!90!black] {$g_{\mathrm{dino}}$}
+              ($(calib.south)+(0,-6mm)$) -- (calib.south);
+  \draw[flow] (calib.east) -- ++(2.5mm,0) |- ($(fuse.west)+(0,1.5mm)$);
+  \draw[flow] (dpt.east) -- ++(2.5mm,0) |- node[edgelbl, pos=0.25, right] {$\hat S_s$} ($(fuse.west)+(0,-1.5mm)$);
   \draw[flow] (fuse) -- (dec);
+  \draw[flow] (dpt) -- (proto);
   \draw[flow] (proto) -- node[edgelbl, above] {$\pi_{\mathrm{proto}}$} (passe);
-  \draw[flow] (passe) -- node[edgelbl, right, align=left] {$\mathcal{E}_{\mathrm{env}}$, $P_{\mathrm{sem}}$\\[-1pt]at stride 4} (dec);
-  \draw[flow] (dec) -- (out);
+  \draw[flow] ($(passe.north)+(-3mm,0)$) -- node[edgelbl, left, align=right] {$\mathcal{E}_{\mathrm{env}},P_{\mathrm{sem}}$\\[-1pt]{\sffamily at stride 4}} ($(dec.south)+(-3mm,0)$);
+  \draw[flow] ($(dec.south)+(3mm,0)$) -- node[edgelbl, right] {$M_4$} ($(passe.north)+(3mm,0)$);
+  \draw[flow] (dec) -- node[edgelbl, above] {$0.8$} (sum);
+  \draw[flow] (proto.south) -- ++(0,-3mm) -| node[edgelbl, pos=0.3, below] {$0.2\,\pi_{\mathrm{proto}}^{\uparrow352}$} (sum.south);
+  \draw[flow] (sum) -- (out);
 
-  % ---- lane labels
+  % ---------------- lanes and legend
   \begin{scope}[on background layer]
     \node[lane, fit=(cnn)(calib)] (local) {};
     \node[lane, fit=(vit)(dpt)] (sem) {};
   \end{scope}
-  \node[lanelbl, above=0.5mm of local] {local stream (trainable CNN)};
-  \node[lanelbl, below=0.5mm of sem.south west, anchor=north west] {semantic stream (foundation model)};
+  \node[lanelbl, anchor=south west] at (local.north west) {Local stream (trainable CNN)};
+  \node[lanelbl, anchor=north west] at (sem.south west) {Semantic stream (foundation model)};
+
+  \node[anchor=south east, font=\sffamily\scriptsize, text=black!65, inner sep=0pt] (legend) at ($(out.east |- local.north)+(0,0.6mm)$)
+    {\tikz[baseline=-0.6ex]\node[ours, minimum height=2mm, text width=2.5mm, inner sep=0pt]{};~proposed
+     \quad\frozen~frozen
+     \quad\tikz[baseline=-0.6ex]\draw[cond] (0,0) -- (5mm,0);~conditioning};
 
 \end{tikzpicture}
 \end{document}

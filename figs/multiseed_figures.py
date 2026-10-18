@@ -11,6 +11,9 @@ import math
 import sys
 from pathlib import Path
 
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
@@ -28,13 +31,15 @@ ARMS = [
     ("protodpt_passe", "ProtoDPT + PASSE + UncStrip (no stem)", BLUES[0]),
     ("flagship", "DANG-Med v4.1 (full)", BLUES[1]),
 ]
+# darker companions for the mean bar and interval, so light fills stay legible
+DARK = ["#6E6E6E", "#B07800", "#3C8FC0", "#004F7C"]
 COHORTS = [
-    ("s1s2", "S1×S2\ntiny/camo"),
-    ("s1s3", "S1×S3\nadverse"),
-    ("s1pra", "S1→PraNet\nexternal"),
-    ("full_etis", "Full→ETIS\n(n=196)"),
-    ("full_s2", "Full→S2\ntiny/camo"),
-    ("full_s3", "Full→S3\nadverse"),
+    ("s1s2", "S1×S2 tiny/camo"),
+    ("s1s3", "S1×S3 adverse"),
+    ("s1pra", "S1→PraNet external"),
+    ("full_etis", "Full→ETIS (n=196)"),
+    ("full_s2", "Full→S2 tiny/camo"),
+    ("full_s3", "Full→S3 adverse"),
 ]
 
 
@@ -47,37 +52,42 @@ def ci(x):
 
 
 def benchmarks():
-    """Grouped bars: 5-seed mean, 95% CI whisker, and each seed as a dot."""
+    """Dot-and-interval rows: each cohort is a row, each arm a sub-row with seed dots, mean and 95% CI."""
     use_style()
-    fig, axes = figure_grid(2, 1, width=WIDE, ratio=0.62, sharex=True)
-    width = 0.2
-    x = np.arange(len(COHORTS))
-    for ax, metric, ylabel in [(axes[0], "dice", "mDice (%)"), (axes[1], "bf1", "Boundary F1 (%)")]:
-        for i, (arm, label, color) in enumerate(ARMS):
-            off = (i - 1.5) * width
-            means, errs, tops = [], [], []
-            for j, (c, _) in enumerate(COHORTS):
+    fig, axes = plt.subplots(1, 2, figsize=(WIDE, 3.3), sharey=True, layout="constrained")
+    n = len(COHORTS)
+    y = np.arange(n)[::-1].astype(float)
+    offs = np.linspace(0.27, -0.27, len(ARMS))
+    split = next(i for i, (c, _) in enumerate(COHORTS) if c.startswith("full"))
+    rng = np.random.default_rng(0)
+    for ax, (metric, xlabel, xlim) in zip(axes, [("dice", "mDice (%)", (38, 86)),
+                                                 ("bf1", "Boundary F1 (%)", (8, 68))]):
+        for i in range(n):
+            if i % 2 == 0:
+                ax.axhspan(y[i] - 0.5, y[i] + 0.5, color="#F3F3F3", lw=0, zorder=0)
+        ax.axhline(y[split] + 0.5, color="#9A9A9A", lw=0.6, zorder=1)
+        for yi, (c, _) in zip(y, COHORTS):
+            for k, (arm, _, color) in enumerate(ARMS):
                 v = vals(arm, f"{c}_{metric}")
-                means.append(v.mean())
-                errs.append(ci(v))
-                tops.append(max(v.max(), v.mean() + ci(v)))
-                jitter = np.linspace(-0.055, 0.055, len(v))
-                ax.scatter(x[j] + off + jitter, v, s=3.5, color="black", alpha=0.55, linewidths=0, zorder=4)
-            bars = ax.bar(x + off, means, width, color=color, edgecolor="black", linewidth=0.4,
-                          label=label, zorder=2)
-            ax.errorbar(x + off, means, yerr=errs, fmt="none", ecolor="black", elinewidth=0.6,
-                        capsize=1.2, capthick=0.6, zorder=3)
-            # Value label sits above the whisker and the highest seed so neither covers it.
-            for xx, m, t in zip(x + off, means, tops):
-                ax.text(xx, t + 1.2, f"{m:.1f}", ha="center", va="bottom", fontsize=5)
-        top = 10 * math.ceil(max(vals(a, f"{c}_{metric}").max() for a, *_ in ARMS for c, _ in COHORTS) * 1.15 / 10)
-        ax.set_ylim(0, top)
-        ax.set_ylabel(ylabel)
-        ax.tick_params(axis="x", length=0)
-        ax.grid(axis="x", visible=False)
-    axes[1].set_xticks(x, [lbl for _, lbl in COHORTS])
-    axes[0].legend(ncol=4, loc="lower center", bbox_to_anchor=(0.5, 1.07), fontsize=6.5, frameon=False,
-                   handlelength=1.2, columnspacing=1.2)
+                m, h = v.mean(), ci(v)
+                yy = yi + offs[k]
+                ax.scatter(v, yy + rng.uniform(-0.03, 0.03, len(v)), s=5, color=color, alpha=0.5,
+                           edgecolors="none", zorder=2)
+                ax.plot([m - h, m + h], [yy, yy], color=DARK[k], lw=1.1, solid_capstyle="round", zorder=3)
+                ax.plot([m], [yy], "o", ms=3.4, color=DARK[k], mec="white", mew=0.4, zorder=4)
+                ax.text(max(m + h, v.max()) + 0.6, yy, f"{m:.1f}", va="center", ha="left", fontsize=5,
+                        color=DARK[k], zorder=5)
+        ax.set_xlim(*xlim)
+        ax.set_xlabel(xlabel)
+        ax.grid(axis="y", visible=False)
+        ax.grid(axis="x", visible=True)
+        ax.tick_params(axis="y", length=0)
+    axes[0].set_yticks(y, [lbl for _, lbl in COHORTS])
+    axes[0].set_ylim(-0.5, n - 0.5)
+    handles = [mpl.lines.Line2D([], [], color=DARK[k], lw=1.1, marker="o", ms=3.4, mec="white", mew=0.4)
+               for k in range(len(ARMS))]
+    fig.legend(handles, [lbl for _, lbl, _ in ARMS], ncol=4, loc="outside upper center", fontsize=6.5,
+               frameon=False, handlelength=1.6, columnspacing=1.4)
     panel_labels(axes)
     save(fig, str(HERE / "multiseed_benchmarks"))
 
@@ -107,37 +117,51 @@ def paired(a, b, key):
 def deltas():
     """Paired seed differences in mDice with 95% t-intervals (n=5 paired seeds)."""
     use_style()
-    fig, axes = figure_grid(1, 2, width=WIDE, ratio=0.54, sharey=True)
-    y = np.arange(len(DELTA_ROWS))[::-1]
-    comps_a = [("protodpt_passe", "ProtoDPT + PASSE + UncStrip (no stem)", BLUES[0], 0.17),
-               ("flagship", "DANG-Med v4.1 (full)", BLUES[1], -0.17)]
+    fig, axes = plt.subplots(1, 2, figsize=(WIDE, 3.45), sharey=True, layout="constrained",
+                             gridspec_kw={"width_ratios": [1.55, 1]})
+    n = len(DELTA_ROWS)
+    y = np.arange(n)[::-1].astype(float)
+    split = next(i for i, (k, _) in enumerate(DELTA_ROWS) if k.startswith("full"))
+    comps_a = [("protodpt_passe", "ProtoDPT + PASSE + UncStrip (no stem)", BLUES[0], 0.16),
+               ("flagship", "DANG-Med v4.1 (full)", BLUES[1], -0.16)]
+    for ax in axes:
+        for i in range(n):  # zebra rows
+            if i % 2 == 0:
+                ax.axhspan(y[i] - 0.5, y[i] + 0.5, color="#F3F3F3", lw=0, zorder=0)
+        ax.axhline(y[split] + 0.5, color="#9A9A9A", lw=0.6, zorder=1)
+        ax.axvline(0, color=BASELINE, lw=0.8, zorder=1)
+        ax.grid(False)
+        ax.tick_params(axis="y", length=0)
     for arm, label, color, dy in comps_a:
         for yi, (key, _) in zip(y, DELTA_ROWS):
             m, h = paired(arm, "baseline", key)
-            axes[0].plot([m - h, m + h], [yi + dy] * 2, color=color, lw=1.1, solid_capstyle="round")
-            axes[0].plot([m], [yi + dy], "o", ms=3.2, color=color, mec="black", mew=0.3)
-        axes[0].plot([], [], "o-", color=color, ms=3.2, lw=1.1, label=label)
+            axes[0].plot([m - h, m + h], [yi + dy] * 2, color=color, lw=1.3, solid_capstyle="round", zorder=3)
+            axes[0].plot([m], [yi + dy], "o", ms=3.6, color=color, mec="white", mew=0.5, zorder=4)
+        axes[0].plot([], [], "o-", color=color, ms=3.6, lw=1.3, mec="white", mew=0.5, label=label)
     axes[0].set_xlabel("Paired Δ mDice vs. ConvNeXt-T baseline (pp)")
-    axes[0].legend(ncol=2, loc="lower left", bbox_to_anchor=(0.0, 1.06), fontsize=6.5, frameon=False,
-                   handlelength=1.6, columnspacing=1.2)
+    axes[0].set_xlim(-6.5, 27.5)
+    fig.legend(*axes[0].get_legend_handles_labels(), ncol=2, loc="outside upper center", fontsize=6.5,
+               frameon=False, handlelength=1.8, columnspacing=1.6)
 
+    xmax = 7.0
     for yi, (key, _) in zip(y, DELTA_ROWS):
         m, h = paired("flagship", "protodpt_passe", key)
         hit = (m - h) > 0 or (m + h) < 0
-        color = PALETTE["red"] if hit else "#4D4D4D"
-        axes[1].plot([m - h, m + h], [yi] * 2, color=color, lw=1.1, solid_capstyle="round")
-        axes[1].plot([m], [yi], "o", ms=3.2, color=color)
-        axes[1].annotate(f"{m:+.2f}", xy=(max(m + h, 0.0), yi), xytext=(4, 0), textcoords="offset points",
-                         va="center", fontsize=5.5, color=color)
+        color = PALETTE["red"] if hit else "#555555"
+        axes[1].plot([m - h, m + h], [yi] * 2, color=color, lw=1.3, solid_capstyle="round", zorder=3)
+        axes[1].plot([m], [yi], "o", ms=3.6, color=color, mec="white", mew=0.5, zorder=4)
+        axes[1].text(xmax + 0.3, yi, f"{m:+.2f}", va="center", ha="left", fontsize=6, color=color,
+                     fontweight="bold" if hit else "normal")
     axes[1].set_xlabel("Paired Δ mDice, full − no-stem (pp)")
-
-    for ax in axes:
-        ax.axvline(0, color=BASELINE, lw=0.8, zorder=0)
-        ax.grid(axis="y", visible=False)
-        ax.tick_params(axis="y", length=0)
-    axes[1].set_xlim(-9.5, 7.5)
+    axes[1].set_xlim(-8.0, xmax)
+    axes[1].text(xmax + 0.3, y[0] + 0.75, "mean", va="bottom", ha="left", fontsize=6, color="#555555")
+    for ax, left, right in [(axes[0], "← worse than baseline", "better than baseline →"),
+                            (axes[1], "← stem hurts", "stem helps →")]:
+        for txt, dx, ha in [(left, -4, "right"), (right, 4, "left")]:
+            ax.annotate(txt, xy=(0, -0.95), xytext=(dx, 0), textcoords="offset points", ha=ha, va="center",
+                        fontsize=5.5, color="#7F7F7F")
     axes[0].set_yticks(y, [lbl for _, lbl in DELTA_ROWS])
-    axes[0].set_ylim(-0.6, len(DELTA_ROWS) - 0.4)
+    axes[0].set_ylim(-1.3, n - 0.5)
     panel_labels(axes)
     save(fig, str(HERE / "multiseed_deltas"))
 

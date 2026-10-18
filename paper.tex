@@ -43,7 +43,7 @@ In clinical practice, endoscopic segmentation systems degrade across three compo
 \begin{figure*}[!t]
   \centering
   \includegraphics[width=\linewidth]{figs/arch_diagram.pdf}
-  \caption{\textbf{DANG-Med fuses a trainable CNN stream with a frozen foundation-model stream and gates the decoder with a prototype-derived support envelope.} A $352\times352$ frame passes through the Retinex chromatic stem and splits into a ConvNeXt-Tiny local stream (stages $s_4$--$s_{32}$) and a frozen DINOv2-Base semantic stream with Freq-MoE Conv-LoRA on blocks $8$--$11$. Tokens from layers $\{2,5,8,11\}$ ($25\times25$ grid) are reassembled by the 4-scale DPT; the global DINO vector $g_{\text{dino}}$ (dashed) conditions style calibration at $s_4$ and $s_8$. Strip GD-SSA fusion aligns the streams at $s_8$--$s_{32}$, the dual-prototype head produces the margin map $\pi_{\text{proto}}$, and PASSE turns it into a support envelope that modulates the stride-$4$ decoder logit. Blue boxes are the proposed components.}
+  \caption{\textbf{DANG-Med fuses a trainable CNN stream with a frozen foundation-model stream and gates the decoder with a prototype-derived support envelope.} A $352\times352$ frame passes through the Retinex chromatic stem and splits into a ConvNeXt-Tiny local stream (stages $s_4$--$s_{32}$) and a frozen DINOv2-Base semantic stream with Freq-MoE Conv-LoRA on blocks $8$--$11$. Tokens from layers $\{2,5,8,11\}$ ($25\times25$ grid) are reassembled by the 4-scale DPT; the global DINO vector $g_{\text{dino}}$ (dashed) conditions style calibration at $s_4$ and $s_8$. Strip GD-SSA fusion aligns the streams at $s_8$--$s_{32}$, the dual-prototype head produces the margin map $\pi_{\text{proto}}$, and PASSE combines it with the coarsest decoder logit $M_4$ into a support envelope that modulates the stride-$4$ decoder logit; the final logit adds $0.2\,\pi_{\text{proto}}$ (Eq.~\ref{eq:passe_mod}). Blue boxes are the proposed components. The thumbnails are a Kvasir test frame and its ground-truth mask, shown for illustration only.}
   \label{fig:arch}
 \end{figure*}
 
@@ -203,7 +203,7 @@ At $352\times 352$ resolution with threshold $0.5$ (\texttt{src/dang/metrics.py}
 \begin{figure*}[!t]
   \centering
   \includegraphics[width=\linewidth]{figs/multiseed_benchmarks.pdf}
-  \caption{\textbf{The prototype/PASSE path, not the second backbone alone, carries the robustness gain.} \textbf{(a)}~mDice and \textbf{(b)}~Boundary F1 on six stress and external cohorts for the four arms of Table~\ref{tab:multiseed}. Bars are means over $5$ seeds ($42$--$46$), whiskers are $95\%$ $t$-intervals of the mean, and dots are individual seeds. The dual-stream SafeConcat control (orange) stays at baseline level in the few-shot cohorts, while both arms with the prototype head and PASSE (blue) separate from it. $S_1$ cohorts are trained on $40$ Kvasir images, Full cohorts on $800$.}
+  \caption{\textbf{The prototype/PASSE path, not the second backbone alone, carries the robustness gain.} \textbf{(a)}~mDice and \textbf{(b)}~Boundary F1 on six stress and external cohorts for the four arms of Table~\ref{tab:multiseed}. Large dots and printed values are means over $5$ seeds ($42$--$46$), horizontal lines are $95\%$ $t$-intervals of the mean, and faint dots are individual seeds. The dual-stream SafeConcat control (orange) stays at baseline level in the few-shot cohorts, while both arms with the prototype head and PASSE (blue) separate from it. $S_1$ cohorts are trained on $40$ Kvasir images, Full cohorts on $800$.}
   \label{fig:multiseed}
 \end{figure*}
 
