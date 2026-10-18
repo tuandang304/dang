@@ -396,7 +396,7 @@ def prepare_all_cohorts() -> dict:
     assert len(val_samples) == 95, f"Expected 95 val samples, got {len(val_samples)}"
     assert len(id_test_samples) == 90, f"Expected 90 id_test samples, got {len(id_test_samples)}"
     assert len(ood_dev_samples) == 272, f"Expected 272 PolypGen-Dev samples, got {len(ood_dev_samples)}"
-    assert len(ood_ext_samples) >= 1000, f"Expected >=1000 PolypGen-Extended samples, got {len(ood_ext_samples)}"
+    assert len(ood_ext_samples) == 967, f"Expected 967 PolypGen-Extended samples, got {len(ood_ext_samples)}"
 
     # Build lookup map from uid -> sample metadata (for native-resolution mask evaluation & sequence clustering)
     uid_lookup = {}
