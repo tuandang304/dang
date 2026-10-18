@@ -472,13 +472,13 @@ def main():
     print(
         f"Prepared All Cohorts in {time.time() - t_data:.1f}s | "
         f"Train(Kvasir)={hygiene['kvasir_train_kept']} | "
-        f"S1-10pct(Kvasir)={hygiene['kvasir_s1_10pct_train_count']} | "
+        f"S1-10pct(Kvasir)={hygiene['kvasir_s1_10pct_train_kept']} | "
         f"Val(Kvasir)={hygiene['kvasir_val_kept']} | "
         f"ID-Test(Kvasir)={hygiene['kvasir_id_test_kept']} | "
         f"PolypGen-Dev={hygiene['polypgen_dev']['kept']} | "
         f"PraNet-External={hygiene['pranet_external_total_kept']} | "
-        f"S2-Tiny-Camo={hygiene['s2_tiny_camo_count']} | "
-        f"S3-Adverse={hygiene['s3_adverse_count']}",
+        f"S2-Tiny-Camo={hygiene['s2_tiny_camouflaged_kept']} | "
+        f"S3-Adverse={hygiene['s3_adverse_endoscopy_kept']}",
         flush=True,
     )
     print("HYGIENE_MANIFEST_JSON: " + json.dumps(hygiene), flush=True)
@@ -514,7 +514,7 @@ def main():
             s1_model, s1_best_ep, _ = train_and_select_best(
                 s1_model,
                 s1_ema,
-                loaders["train_s1_10pct"],
+                loaders["train_s1"],
                 loaders["val"],
                 cfg,
                 device,
