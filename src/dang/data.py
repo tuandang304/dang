@@ -305,9 +305,9 @@ def prepare_all_cohorts() -> dict:
     def min_fov_dist_to_kvasir(dh_fov: int) -> int:
         return min(hamming_dist64(dh_fov, kh) for kh in all_kvasir_fov_dhashes)
 
-    # P1: Exact 800-image training split; plus S1 10% (80-image) label-scarce training split
+    # P1: Exact 800-image training split; plus S1 5% (40-image) few-shot label-scarce training split
     train_samples = list(all_kvasir_samples[:800])
-    train_s1_10pct_samples = list(all_kvasir_samples[:80])
+    train_s1_10pct_samples = list(all_kvasir_samples[:40])
     train_hashes = [s["dhash"] for s in train_samples]
     is_near_train = lambda s: any(hamming_dist64(s["dhash"], th) <= 4 for th in train_hashes)
 
@@ -318,13 +318,19 @@ def prepare_all_cohorts() -> dict:
         if not is_near_train(s) and not any(hamming_dist64(s["dhash"], vh) <= 4 for vh in val_hashes)
     ]
 
-    # Cohort 1: PolypGen-Dev (n=272 from combo_polyp validation split)
+    # Cohort 1: PolypGen-Dev (n=258 from combo_polyp validation split after strict dHash > 4 vs Kvasir)
     ood_dev_rows = pq.read_table(ood_dev_pq).to_pylist()
     ood_dev_samples = []
     seen_dev_md5 = set()
     dev_dhashes = []
     dev_c4_seq_ids = set()
-    dev_stats = {"raw_rows": len(ood_dev_rows), "kvasir_uuid_dropped": 0, "empty_mask_dropped": 0, "dup_dropped": 0}
+    dev_stats = {
+        "raw_rows": len(ood_dev_rows),
+        "kvasir_uuid_dropped": 0,
+        "empty_mask_dropped": 0,
+        "dup_dropped": 0,
+        "kvasir_dhash_le4_dropped": 0,
+    }
 
     for r in ood_dev_rows:
         fn = r["image"].get("path", "unknown.jpg")
@@ -338,13 +344,16 @@ def prepare_all_cohorts() -> dict:
         if digest in all_kvasir_md5 or digest in seen_dev_md5:
             dev_stats["dup_dropped"] += 1
             continue
+        dh = compute_dhash64(img_b, crop_fov=False)
+        min_kd = min_dist_to_kvasir(dh)
+        if min_kd <= 4:
+            dev_stats["kvasir_dhash_le4_dropped"] += 1
+            continue
         mask_b = r["label"]["bytes"]
         mask_bool = decode_binary_mask_np(mask_b)
         if not mask_bool.any():
             dev_stats["empty_mask_dropped"] += 1
             continue
-        dh = compute_dhash64(img_b, crop_fov=False)
-        min_kd = min_dist_to_kvasir(dh)
         area_pct, bnd_contrast = compute_lesion_area_and_contrast(img_b, mask_bool)
         seen_dev_md5.add(digest)
         dev_dhashes.append(dh)
@@ -528,10 +537,10 @@ def prepare_all_cohorts() -> dict:
         })
 
     assert len(train_samples) == 800, f"Expected 800 train samples, got {len(train_samples)}"
-    assert len(train_s1_10pct_samples) == 80, f"Expected 80 S1 train samples, got {len(train_s1_10pct_samples)}"
+    assert len(train_s1_10pct_samples) == 40, f"Expected 40 S1 train samples, got {len(train_s1_10pct_samples)}"
     assert len(val_samples) == 95, f"Expected 95 val samples, got {len(val_samples)}"
     assert len(id_test_samples) == 90, f"Expected 90 id_test samples, got {len(id_test_samples)}"
-    assert len(ood_dev_samples) == 272, f"Expected 272 PolypGen-Dev samples, got {len(ood_dev_samples)}"
+    assert len(ood_dev_samples) == 258, f"Expected 258 PolypGen-Dev samples, got {len(ood_dev_samples)}"
     assert len(ood_ext_samples) == 967, f"Expected 967 PolypGen-Extended samples, got {len(ood_ext_samples)}"
 
     uid_lookup = {}
