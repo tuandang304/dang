@@ -19,7 +19,7 @@ class ExperimentConfig:
     vit_backbone: str = "vit_base_patch14_dinov2.lvd142m"
     peft_mode: str = "freq_moe_conv_lora"
     lora_rank: int = 4
-    adapter_start_block: int = 6
+    adapter_start_block: int = 8
 
     # DANG-Med v4 Breakthrough Pillars
     use_proto_dpt: bool = True           # Pillar A: 4-Scale DPT Reassembly + Supervised Prototype & Self-Support Margin Prior

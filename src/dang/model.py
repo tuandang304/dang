@@ -44,12 +44,150 @@ class ConvBNAct(nn.Module):
 class LayerScale2d(nn.Module):
     """Per-channel learnable residual scaling initialized so new branches start stable without dead attenuation."""
 
-    def __init__(self, dim: int, init_val: float = 0.15):
+    def __init__(self, dim: int, init_val: float = 0.20):
         super().__init__()
         self.gamma = nn.Parameter(torch.full((1, dim, 1, 1), init_val))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.gamma * x
+
+
+class RetinexChromaticStem(nn.Module):
+    """
+    Input-Level Multi-Scale Retinex + Specular-Aware Chromatic Normalizer (v4 Pillar B Stem):
+    1) During training (p=0.55), synthesizes online clinical endoscopy corruptions (NBI green/blue spectral shift,
+       low-light radial lumen vignette, specular glare blobs, and combined severe shift) so the stem and dual
+       backbones learn invariant representations from Kvasir alone.
+    2) At both train and test time, performs differentiable specular highlight inpainting, multi-scale homomorphic
+       Retinex illumination normalization (kernel 31x31 + 15x15), and canonical Kvasir chromatic standardization,
+       gated by an automatic photometric anomaly detector so clean white-light images remain untouched while
+       adverse NBI/low-light/glare images are restored before entering ConvNeXt and DINOv2.
+    """
+
+    def __init__(self, aug_prob: float = 0.55):
+        super().__init__()
+        self.aug_prob = aug_prob
+        self.register_buffer("im_mean", torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(1, 3, 1, 1))
+        self.register_buffer("im_std", torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(1, 3, 1, 1))
+        # Canonical white-light Kvasir RGB mean & std in [0, 1] space
+        self.register_buffer("ref_mean", torch.tensor([0.555, 0.325, 0.240], dtype=torch.float32).view(1, 3, 1, 1))
+        self.register_buffer("ref_std", torch.tensor([0.235, 0.185, 0.160], dtype=torch.float32).view(1, 3, 1, 1))
+
+        self.refine_net = nn.Sequential(
+            nn.Conv2d(6, 16, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(16),
+            nn.GELU(),
+            nn.Conv2d(16, 3, kernel_size=3, padding=1, bias=True),
+        )
+        nn.init.zeros_(self.refine_net[-1].weight)
+        nn.init.zeros_(self.refine_net[-1].bias)
+        self.gate_mlp = nn.Sequential(
+            nn.Linear(9, 16),
+            nn.GELU(),
+            nn.Linear(16, 3),
+        )
+        nn.init.zeros_(self.gate_mlp[-1].weight)
+        nn.init.constant_(self.gate_mlp[-1].bias, 0.2)
+
+    @torch.no_grad()
+    def _synthesize_training_adverse_shift(self, rgb: torch.Tensor) -> torch.Tensor:
+        B, _, H, W = rgb.shape
+        out = rgb.clone()
+        yy, xx = torch.meshgrid(
+            torch.linspace(-1.0, 1.0, H, device=rgb.device),
+            torch.linspace(-1.0, 1.0, W, device=rgb.device),
+            indexing="ij",
+        )
+        for i in range(B):
+            if torch.rand(1, device=rgb.device).item() > self.aug_prob:
+                continue
+            mode = int(torch.randint(0, 4, (1,), device=rgb.device).item())
+            im = out[i]  # [3, H, W]
+            if mode == 0:
+                # Simulated NBI spectral shift
+                r, g, b = im[0], im[1], im[2]
+                im_nbi = torch.stack([
+                    0.32 * r + 0.18 * g,
+                    (1.15 * g).clamp(0.0, 1.0).pow(0.88),
+                    (1.22 * b + 0.10 * g).clamp(0.0, 1.0).pow(0.85),
+                ], dim=0)
+                out[i] = im_nbi.clamp(0.0, 1.0)
+            elif mode == 1:
+                # Simulated Low-Light Lumen Vignette
+                cx = float(torch.empty(1, device=rgb.device).uniform_(-0.28, 0.28).item())
+                cy = float(torch.empty(1, device=rgb.device).uniform_(-0.28, 0.28).item())
+                r2 = (xx - cx) ** 2 + (yy - cy) ** 2
+                vig = (1.0 - 0.62 * r2).clamp(0.18, 1.0)
+                out[i] = (im.pow(2.35) * vig.unsqueeze(0) * 0.48 + 0.015).clamp(0.0, 1.0)
+            elif mode == 2:
+                # Simulated Specular Glare + Defocus Blur
+                im_blur = F.avg_pool2d(im.unsqueeze(0), kernel_size=5, stride=1, padding=2)[0]
+                glare = torch.zeros((1, H, W), device=rgb.device)
+                for _ in range(4):
+                    gx = float(torch.empty(1, device=rgb.device).uniform_(-0.55, 0.55).item())
+                    gy = float(torch.empty(1, device=rgb.device).uniform_(-0.55, 0.55).item())
+                    rad2 = float(torch.empty(1, device=rgb.device).uniform_(0.04, 0.09).item()) ** 2
+                    d2 = (xx - gx) ** 2 + (yy - gy) ** 2
+                    glare = torch.maximum(glare, torch.exp(-d2 / (2.0 * rad2)).unsqueeze(0))
+                out[i] = (im_blur * (1.0 - 0.75 * glare) + 0.98 * glare).clamp(0.0, 1.0)
+            else:
+                # Combined Severe: Low-Light + Chromatic Shift + Glare + Low Contrast
+                cx = float(torch.empty(1, device=rgb.device).uniform_(-0.25, 0.25).item())
+                cy = float(torch.empty(1, device=rgb.device).uniform_(-0.25, 0.25).item())
+                r2 = (xx - cx) ** 2 + (yy - cy) ** 2
+                vig = (1.0 - 0.65 * r2).clamp(0.15, 1.0)
+                im_c = torch.stack([im[0] * 0.42, im[1] * 0.95, im[2] * 1.15], dim=0).clamp(0.0, 1.0)
+                im_c = im_c.pow(2.20) * vig.unsqueeze(0) * 0.52
+                im_c = F.avg_pool2d(im_c.unsqueeze(0), kernel_size=5, stride=1, padding=2)[0]
+                mean_val = im_c.mean()
+                out[i] = (mean_val + 0.55 * (im_c - mean_val)).clamp(0.0, 1.0)
+        return out
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        xf = x.float()
+        rgb = (xf * self.im_std + self.im_mean).clamp(0.0, 1.0)
+
+        if self.training and self.aug_prob > 0.0:
+            rgb = self._synthesize_training_adverse_shift(rgb)
+
+        # 1. Specular Glare Detection & Smooth Local Inpainting
+        min_c = rgb.amin(dim=1, keepdim=True)
+        glare_w = torch.sigmoid(18.0 * (min_c - 0.82))
+        local_med = F.avg_pool2d(rgb, kernel_size=15, stride=1, padding=7, count_include_pad=False)
+        rgb_deglare = (1.0 - glare_w) * rgb + glare_w * local_med
+
+        # 2. Multi-Scale Homomorphic Retinex Illumination Division + Gamma Recovery
+        illum_coarse = F.avg_pool2d(rgb_deglare, kernel_size=31, stride=1, padding=15, count_include_pad=False) + 0.03
+        illum_mid = F.avg_pool2d(rgb_deglare, kernel_size=15, stride=1, padding=7, count_include_pad=False) + 0.03
+        log_refl = torch.log(rgb_deglare + 0.03) - (0.65 * torch.log(illum_coarse) + 0.35 * torch.log(illum_mid))
+
+        # 3. Canonical Kvasir Chromatic Standardization (cancels NBI / low-light / low-contrast shifts)
+        r_mu = log_refl.mean(dim=(-2, -1), keepdim=True)
+        r_std = (log_refl.var(dim=(-2, -1), unbiased=False, keepdim=True) + 1e-5).sqrt()
+        refl_norm = (log_refl - r_mu) / r_std
+
+        # Also global instance-standardized RGB (preserves low-frequency polyp vs background shading)
+        c_mu = rgb_deglare.mean(dim=(-2, -1), keepdim=True)
+        c_std = (rgb_deglare.var(dim=(-2, -1), unbiased=False, keepdim=True) + 1e-5).sqrt()
+        global_norm = (rgb_deglare - c_mu) / c_std
+
+        restored_rgb = (0.55 * global_norm + 0.45 * refl_norm) * self.ref_std + self.ref_mean
+        restored_rgb = restored_rgb.clamp(0.0, 1.0)
+
+        # 4. Automatic Photometric Anomaly Gate (activates strongly when input deviates from canonical white-light)
+        dev_mu = (c_mu - self.ref_mean).abs() / 0.18
+        dev_std = (c_std - self.ref_std).abs() / 0.10
+        glare_frac = glare_w.mean(dim=(-2, -1), keepdim=True).expand_as(dev_mu)
+        anomaly_score = (0.50 * dev_mu + 0.35 * dev_std + 0.15 * glare_frac).clamp(0.0, 1.5)
+        stat_vec = torch.cat([c_mu.flatten(1), c_std.flatten(1), anomaly_score.flatten(1)], dim=1)
+        learned_gate = torch.sigmoid(self.gate_mlp(stat_vec)).view(-1, 3, 1, 1)
+        blend_w = (anomaly_score * learned_gate).clamp(0.05, 0.92)
+
+        blended_rgb = (1.0 - blend_w) * rgb + blend_w * restored_rgb
+        x_base = (blended_rgb - self.im_mean) / self.im_std
+        x_restored_norm = (restored_rgb - self.im_mean) / self.im_std
+        delta = self.refine_net(torch.cat([x_base, x_restored_norm], dim=1))
+        return (x_base + 0.25 * delta).to(dtype=x.dtype)
 
 
 class ViTBlockAdapterWrapper(nn.Module):
@@ -152,7 +290,7 @@ class FastAxialStripSSM(nn.Module):
 
         self.norm = nn.BatchNorm2d(dim)
         self.out_proj = nn.Conv2d(dim, dim, kernel_size=1, bias=False)
-        self.ls = LayerScale2d(dim, init_val=0.15)
+        self.ls = LayerScale2d(dim, init_val=0.20)
 
     def forward(self, x: torch.Tensor, cond: torch.Tensor | None = None) -> torch.Tensor:
         xz = self.in_proj(x)
@@ -229,10 +367,7 @@ class SS2DLite(nn.Module):
 class DINOFreqStyleCalibrator(nn.Module):
     """
     DINOv2-Conditioned Low-Frequency Illumination & Style Calibrator + Training Low-Freq MixStyle (v4 Pillar B):
-    1) During training (p=0.5), perturbs low-frequency illumination statistics across batch instances so the
-       decoder cannot overfit to Kvasir white-light color statistics.
-    2) At both train and test time, uses global DINOv2 context to normalize low-frequency illumination drift
-       (NBI green/blue shift, dark lumen vignette, glare) while preserving high-frequency mucosal edges.
+    Normalizes low-frequency illumination drift on ConvNeXt stages s1 and s2 using global DINOv2 context.
     """
 
     def __init__(self, dim: int, vit_dim: int = 768, mixstyle_p: float = 0.5):
@@ -246,8 +381,7 @@ class DINOFreqStyleCalibrator(nn.Module):
         )
         nn.init.zeros_(self.style_mlp[-1].weight)
         nn.init.zeros_(self.style_mlp[-1].bias)
-        # Blend gate initialized to sigmoid(-0.5) ≈ 0.38 so illumination normalization is active from Epoch 1
-        self.calib_alpha = nn.Parameter(torch.full((1, dim, 1, 1), -0.5))
+        self.calib_alpha = nn.Parameter(torch.full((1, dim, 1, 1), -0.2))
 
     def forward(self, x: torch.Tensor, g_dino: torch.Tensor | None = None) -> torch.Tensor:
         B, C, H, W = x.shape
@@ -291,7 +425,7 @@ class EdgeSnappedSemUp(nn.Module):
     Starts as exact bilinear interpolation and learns a content-aware local reassembly residual guided by sharp CNN features.
     """
 
-    def __init__(self, dim: int, k: int = 5, dilation: int = 2):
+    def __init__(self, dim: int, k: int = 3, dilation: int = 1):
         super().__init__()
         self.k = k
         self.d = dilation
@@ -322,16 +456,14 @@ class DPTFourScaleReassembler(nn.Module):
     """
     4-Scale Learned DPT Multi-Layer Reassembler (v4 Pillar A):
     Combines all 4 DINOv2 intermediate layers [2, 5, 8, 11] into all 4 target pyramid scales
-    (including stride-4 88x88) via learned softmax depth-mixing weights + Edge-Snapped Upsampling.
+    (including stride-4 88x88) via learned softmax depth-mixing weights + Edge-Snapped Upsampling at s8/s16.
     """
 
     def __init__(self, dim: int):
         super().__init__()
-        # 4 target scales x 4 DINOv2 layers, initialized with diagonal preference (+2.0)
         init_logits = torch.eye(4) * 2.0
         self.depth_logits = nn.Parameter(init_logits)
-        self.edge_snap_s4 = EdgeSnappedSemUp(dim, k=3, dilation=1)
-        self.edge_snap_s8 = EdgeSnappedSemUp(dim, k=5, dilation=2)
+        self.edge_snap_s8 = EdgeSnappedSemUp(dim, k=3, dilation=2)
         self.edge_snap_s16 = EdgeSnappedSemUp(dim, k=3, dilation=1)
         self.scale_convs = nn.ModuleList([
             ConvBNAct(dim, dim, kernel_size=3, padding=1) for _ in range(4)
@@ -348,25 +480,24 @@ class DPTFourScaleReassembler(nn.Module):
                 + w_s[2] * sem_25[2]
                 + w_s[3] * sem_25[3]
             )
-            if s_idx == 0:
-                up = self.edge_snap_s4(mixed_25, loc_feats[0])
-            elif s_idx == 1:
+            if s_idx == 1:
                 up = self.edge_snap_s8(mixed_25, loc_feats[1])
             elif s_idx == 2:
                 up = self.edge_snap_s16(mixed_25, loc_feats[2])
             else:
-                up = F.interpolate(mixed_25, size=loc_feats[3].shape[-2:], mode="bilinear", align_corners=False)
+                up = F.interpolate(mixed_25, size=loc_feats[s_idx].shape[-2:], mode="bilinear", align_corners=False)
             out_scales.append(self.scale_convs[s_idx](up))
         return out_scales
 
 
 class DualPrototypeMarginHead(nn.Module):
     """
-    Supervised Foreground/Background Prototype Bank + Test-Time Self-Support Margin Prior (v4 Pillar A):
-    1) Projects deep DINOv2 tokens [T_8, T_11] to L2-normalized fp32 embeddings Z (25x25).
-    2) Computes cosine margin against K=8 foreground polyp prototypes and K=8 background mucosa prototypes.
-    3) Extracts per-image self-support foreground & background centroids from high-confidence tokens in Z,
-       providing test-time domain/illumination/camouflage adaptation on unseen clinical centers.
+    Supervised Foreground/Background Prototype Bank + Ground-Truth EMA Support Anchors + Test-Time Self-Support Margin (v4 Pillar A):
+    1) Projects deep DINOv2 tokens [T_5, T_8, T_11] to L2-normalized fp32 embeddings Z (25x25).
+    2) During training, directly updates EMA foreground & background anchor vectors from ground-truth mask patch
+       occupancy so that even with 10% labels (80 images), the prototype manifold locks onto true polyp vs. mucosa tokens.
+    3) Combines learned K-prototype cosine margin, EMA ground-truth support anchor margin, and test-time image-adaptive
+       self-support centroid margin.
     """
 
     def __init__(self, dim: int = 192, proto_dim: int = 128, num_prototypes: int = 8):
@@ -374,7 +505,7 @@ class DualPrototypeMarginHead(nn.Module):
         self.proto_dim = proto_dim
         self.num_prototypes = num_prototypes
         self.proj = nn.Sequential(
-            ConvBNAct(dim * 2, dim, kernel_size=3, padding=1),
+            ConvBNAct(dim * 3, dim, kernel_size=3, padding=1),
             nn.Conv2d(dim, proto_dim, kernel_size=1, bias=True),
         )
         fg_p = torch.empty(num_prototypes, proto_dim)
@@ -383,19 +514,52 @@ class DualPrototypeMarginHead(nn.Module):
         nn.init.orthogonal_(bg_p)
         self.fg_prototypes = nn.Parameter(fg_p)
         self.bg_prototypes = nn.Parameter(bg_p)
+
+        self.register_buffer("ema_fg_anchor", F.normalize(fg_p.mean(dim=0, keepdim=True), p=2, dim=-1))
+        self.register_buffer("ema_bg_anchor", F.normalize(bg_p.mean(dim=0, keepdim=True), p=2, dim=-1))
+        self.register_buffer("ema_initialized", torch.tensor(0, dtype=torch.long))
+
         self.log_temp = nn.Parameter(torch.tensor(math.log(12.0)))
         self.bias = nn.Parameter(torch.tensor(0.0))
-        self.self_support_weight = nn.Parameter(torch.tensor(0.35))
+        self.self_support_weight = nn.Parameter(torch.tensor(0.40))
+        self.ema_anchor_weight = nn.Parameter(torch.tensor(0.45))
 
-    def forward(self, sem_25: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
-        deep_cat = torch.cat([sem_25[2], sem_25[3]], dim=1)
-        z_raw = self.proj(deep_cat).float()  # [B, Dp, H, W] in fp32
+    @torch.no_grad()
+    def _update_ema_anchors(self, z_norm: torch.Tensor, gt_mask: torch.Tensor):
+        m_25 = F.adaptive_avg_pool2d(gt_mask.float(), z_norm.shape[-2:])  # [B, 1, 25, 25]
+        fg_w = (m_25 >= 0.35).float() * m_25
+        bg_w = (m_25 <= 0.10).float() * (1.0 - m_25)
+
+        if fg_w.sum() > 1.0:
+            batch_fg = (fg_w * z_norm).sum(dim=(0, 2, 3)) / (fg_w.sum() + 1e-6)
+            batch_fg = F.normalize(batch_fg.unsqueeze(0), p=2, dim=-1, eps=1e-6)
+            if self.ema_initialized.item() == 0:
+                self.ema_fg_anchor.copy_(batch_fg)
+            else:
+                self.ema_fg_anchor.copy_(F.normalize(0.95 * self.ema_fg_anchor + 0.05 * batch_fg, p=2, dim=-1, eps=1e-6))
+
+        if bg_w.sum() > 1.0:
+            batch_bg = (bg_w * z_norm).sum(dim=(0, 2, 3)) / (bg_w.sum() + 1e-6)
+            batch_bg = F.normalize(batch_bg.unsqueeze(0), p=2, dim=-1, eps=1e-6)
+            if self.ema_initialized.item() == 0:
+                self.ema_bg_anchor.copy_(batch_bg)
+            else:
+                self.ema_bg_anchor.copy_(F.normalize(0.95 * self.ema_bg_anchor + 0.05 * batch_bg, p=2, dim=-1, eps=1e-6))
+
+        if fg_w.sum() > 1.0 and bg_w.sum() > 1.0:
+            self.ema_initialized.fill_(1)
+
+    def forward(self, sem_25: list[torch.Tensor], gt_mask: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        deep_cat = torch.cat([sem_25[1], sem_25[2], sem_25[3]], dim=1)
+        z_raw = self.proj(deep_cat).float()  # [B, Dp, 25, 25] in fp32
         z_norm = F.normalize(z_raw, p=2, dim=1, eps=1e-6)
 
-        fg_p = F.normalize(self.fg_prototypes.float(), p=2, dim=-1, eps=1e-6)  # [K, Dp]
-        bg_p = F.normalize(self.bg_prototypes.float(), p=2, dim=-1, eps=1e-6)  # [K, Dp]
+        if self.training and gt_mask is not None:
+            self._update_ema_anchors(z_norm.detach(), gt_mask)
 
-        # Cosine similarities: [B, K, H, W]
+        fg_p = F.normalize(self.fg_prototypes.float(), p=2, dim=-1, eps=1e-6)
+        bg_p = F.normalize(self.bg_prototypes.float(), p=2, dim=-1, eps=1e-6)
+
         sim_fg = torch.einsum("bdhw,kd->bkhw", z_norm, fg_p)
         sim_bg = torch.einsum("bdhw,kd->bkhw", z_norm, bg_p)
 
@@ -404,10 +568,19 @@ class DualPrototypeMarginHead(nn.Module):
         score_bg = torch.logsumexp(lse_t * sim_bg, dim=1, keepdim=True) / lse_t
 
         temp = self.log_temp.float().exp().clamp(4.0, 25.0)
-        bank_logits = temp * (score_fg - score_bg) + self.bias.float()  # [B, 1, 25, 25]
+        bank_logits = temp * (score_fg - score_bg) + self.bias.float()
 
-        # Image-Adaptive Self-Support Margin Map (computed in fp32 from detached soft bank probabilities)
-        p_fg = torch.sigmoid(bank_logits.detach())
+        # EMA Ground-Truth Support Anchor Margin
+        ema_fg = F.normalize(self.ema_fg_anchor.float(), p=2, dim=-1, eps=1e-6)
+        ema_bg = F.normalize(self.ema_bg_anchor.float(), p=2, dim=-1, eps=1e-6)
+        ema_margin = 10.0 * (
+            torch.einsum("bdhw,kd->bkhw", z_norm, ema_fg) - torch.einsum("bdhw,kd->bkhw", z_norm, ema_bg)
+        )
+        ema_w = 0.5 * torch.tanh(self.ema_anchor_weight.float())
+        prior_logits = bank_logits + ema_w * ema_margin
+
+        # Image-Adaptive Self-Support Margin Map
+        p_fg = torch.sigmoid(prior_logits.detach())
         w_fg = p_fg.pow(2) + 1e-4
         w_bg = (1.0 - p_fg).pow(2) + 1e-4
 
@@ -421,7 +594,7 @@ class DualPrototypeMarginHead(nn.Module):
         self_logits = 8.0 * (self_fg - self_bg)
 
         ss_w = 0.5 * torch.tanh(self.self_support_weight.float())
-        proto_logits = bank_logits + ss_w * self_logits
+        proto_logits = prior_logits + ss_w * self_logits
         return proto_logits, z_norm
 
 
@@ -468,10 +641,8 @@ class GDSSAFusion(nn.Module):
             nn.Sigmoid(),
         )
         nn.init.zeros_(self.reliability[-2].weight)
-        # In v4 (use_fast_strip=True), initialize reliability bias to 0.0 (sigmoid=0.50) and LayerScale=0.25
-        # so semantic fusion is immediately active instead of attenuated by 0.0091x!
-        rel_bias = 0.0 if use_fast_strip else -1.5
-        ls_init = 0.25 if use_fast_strip else 0.05
+        rel_bias = 0.2 if use_fast_strip else -1.5
+        ls_init = 0.30 if use_fast_strip else 0.05
         nn.init.constant_(self.reliability[-2].bias, rel_bias)
         self.ls = LayerScale2d(dim, init_val=ls_init)
 
@@ -579,7 +750,7 @@ class A2BDBlock(nn.Module):
             nn.Sigmoid(),
         )
         self.out_proj = ConvBNAct(dim, dim, kernel_size=3, padding=1)
-        self.ls = LayerScale2d(dim, init_val=0.15 if use_fast_strip else 0.05)
+        self.ls = LayerScale2d(dim, init_val=0.20 if use_fast_strip else 0.05)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         base_y = self.base(x)
@@ -632,8 +803,7 @@ class UncertaintyStripDecoderStage(nn.Module):
       - Foreground probability A_fg = sigmoid(M_coarse)
       - Boundary Uncertainty Map U = 4 * A_fg * (1 - A_fg) (peaks at 1.0 on ambiguous p=0.5 flat borders)
       - Outer Morphological Ring Halo R = MaxPool5x5(A_fg) - A_fg
-    and uses [A_fg, U, R] to modulate lateral & top-down features before FastAxialStripSSM refinement
-    and coarse-to-fine residual logit prediction.
+    and uses [A_fg, U, R] to modulate lateral & top-down features before FastAxialStripSSM refinement.
     """
 
     def __init__(self, dim: int, has_top: bool = True, use_ssm: bool = True):
@@ -673,7 +843,6 @@ class UncertaintyStripDecoderStage(nn.Module):
             g_top = 2.0 * torch.sigmoid(self.top_gate(torch.cat([lateral, top_up, priors], dim=1)))
             fused = lateral + g_top * top_up
             unc_mod = self.unc_attention(torch.cat([fused, priors], dim=1))
-            # Amplify features in high-uncertainty boundary zones and foreground cores
             x = fused * (1.0 + 0.5 * unc_map.to(dtype=lateral.dtype) + 0.3 * (unc_mod - 0.5))
             feat = self.block(x)
             stage_logit = logit_up + self.stage_head(feat).float()
@@ -682,7 +851,7 @@ class UncertaintyStripDecoderStage(nn.Module):
             stage_logit = self.stage_head(feat).float()
             if proto_prior_logit is not None:
                 p_up = F.interpolate(proto_prior_logit.float(), size=(H, W), mode="bilinear", align_corners=False)
-                stage_logit = 0.65 * stage_logit + 0.35 * p_up
+                stage_logit = 0.60 * stage_logit + 0.40 * p_up
         return feat, stage_logit
 
 
@@ -694,6 +863,9 @@ class DANGModel(nn.Module):
         self.use_proto_dpt = getattr(cfg, "use_proto_dpt", False)
         self.use_style_calib = getattr(cfg, "use_style_calib", False)
         self.use_fast_strip_ssm = getattr(cfg, "use_fast_strip_ssm", False)
+
+        if self.use_style_calib:
+            self.input_calibrator = RetinexChromaticStem(aug_prob=0.55)
 
         self.cnn = timm.create_model(cfg.cnn_backbone, pretrained=True, features_only=True)
         cnn_channels = self.cnn.feature_info.channels()
@@ -710,7 +882,7 @@ class DANGModel(nn.Module):
 
             num_prefix = getattr(self.vit, "num_prefix_tokens", 1)
             vit_dim = self.vit.embed_dim
-            self.adapter_start_block = getattr(cfg, "adapter_start_block", 6)
+            self.adapter_start_block = getattr(cfg, "adapter_start_block", 8)
             if cfg.peft_mode != "none":
                 for i in range(self.adapter_start_block, len(self.vit.blocks)):
                     self.vit.blocks[i] = ViTBlockAdapterWrapper(
@@ -735,7 +907,7 @@ class DANGModel(nn.Module):
                 )
 
             if cfg.fusion_mode == "proto_dpt_strip_ssa":
-                self.fuser_s4 = SafeConcatFusion(dim, init_bias=-0.5, ls_init=0.20)
+                self.fuser_s4 = SafeConcatFusion(dim, init_bias=-0.2, ls_init=0.25)
                 self.fuser_s8 = GDSSAFusion(dim, use_fast_strip=True, has_proto_prior=self.use_proto_dpt)
                 self.fuser_s16 = GDSSAFusion(dim, use_fast_strip=True, has_proto_prior=self.use_proto_dpt)
                 self.fuser_s32 = GDSSAFusion(dim, use_fast_strip=True, has_proto_prior=self.use_proto_dpt)
@@ -761,7 +933,8 @@ class DANGModel(nn.Module):
             self.dec_p4 = UncertaintyStripDecoderStage(dim, has_top=False, use_ssm=True)
             self.dec_p3 = UncertaintyStripDecoderStage(dim, has_top=True, use_ssm=True)
             self.dec_p2 = UncertaintyStripDecoderStage(dim, has_top=True, use_ssm=True)
-            self.dec_p1 = UncertaintyStripDecoderStage(dim, has_top=True, use_ssm=True)
+            # Keep use_ssm=False at 88x88 p1 to prevent 15GB T4 VRAM fragmentation while preserving sharp Sobel-L1 edges
+            self.dec_p1 = UncertaintyStripDecoderStage(dim, has_top=True, use_ssm=False)
         elif cfg.decoder_mode == "detail_a2bd_v2":
             self.dec_p4 = DetailFirstDecoderStage(dim, has_top=False, use_ssm=True, use_fast_strip=self.use_fast_strip_ssm)
             self.dec_p3 = DetailFirstDecoderStage(dim, has_top=True, use_ssm=True, top_bias=0.0, use_fast_strip=self.use_fast_strip_ssm)
@@ -833,8 +1006,11 @@ class DANGModel(nn.Module):
         g_dino = last_sp.mean(dim=(-2, -1)) if last_sp is not None else sem_feats_25[-1][1].mean(dim=(-2, -1))
         return proj_25, g_dino
 
-    def forward(self, x: torch.Tensor) -> dict:
+    def forward(self, x: torch.Tensor, gt_mask: torch.Tensor | None = None) -> dict:
         H, W = x.shape[-2:]
+        if self.use_style_calib:
+            x = self.input_calibrator(x)
+
         raw_loc = self.cnn(x)
         loc_feats = [proj(f) for proj, f in zip(self.loc_projs, raw_loc)]
 
@@ -844,7 +1020,7 @@ class DANGModel(nn.Module):
         if self.use_dinov2:
             sem_25, g_dino = self._extract_vit_pyramid(x)
             if self.use_proto_dpt:
-                proto_logits, _ = self.proto_head(sem_25)
+                proto_logits, _ = self.proto_head(sem_25, gt_mask=gt_mask)
 
         if self.use_style_calib:
             loc_feats[0] = self.style_calib_s4(loc_feats[0], g_dino=g_dino)
@@ -896,8 +1072,10 @@ class DANGModel(nn.Module):
                 F.interpolate(p3, size=(h1, w1), mode="bilinear", align_corners=False),
                 F.interpolate(p4, size=(h1, w1), mode="bilinear", align_corners=False),
             ], dim=1)
-            # Combine multi-scale hypercolumn head with progressive uncertainty-refined mask logit m1
-            fused_logit_low = 0.60 * self.head(cat_feat).float() + 0.40 * m1.float()
+            fused_logit_low = 0.55 * self.head(cat_feat).float() + 0.45 * m1.float()
+            if proto_logits is not None:
+                p_up = F.interpolate(proto_logits.float(), size=(h1, w1), mode="bilinear", align_corners=False)
+                fused_logit_low = 0.80 * fused_logit_low + 0.20 * p_up
             logits = F.interpolate(fused_logit_low, size=(H, W), mode="bilinear", align_corners=False)
             boundary_logits = F.interpolate(b_logits_low, size=(H, W), mode="bilinear", align_corners=False)
             aux_logits = [

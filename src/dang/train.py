@@ -2,6 +2,9 @@ import copy
 import json
 import math
 import os
+
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import random
 import time
 from collections import defaultdict
@@ -44,19 +47,28 @@ def extract_morphological_boundary_gt(mask: torch.Tensor) -> torch.Tensor:
     return (dilated - eroded).clamp(0.0, 1.0)
 
 
-def bce_dice_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+def bce_dice_loss(logits: torch.Tensor, targets: torch.Tensor, sample_weights: torch.Tensor | None = None) -> torch.Tensor:
     logits_f = logits.float()
     targets_f = targets.float()
-    bce = F.binary_cross_entropy_with_logits(logits_f, targets_f)
+    bce_map = F.binary_cross_entropy_with_logits(logits_f, targets_f, reduction="none")
+    bce_per_sample = bce_map.mean(dim=(1, 2, 3))
     probs = torch.sigmoid(logits_f)
-    inter = (probs * targets_f).sum(dim=(2, 3))
-    union = (probs + targets_f).sum(dim=(2, 3))
-    dice_loss = 1.0 - ((2.0 * inter + 1.0) / (union + 1.0)).mean()
-    return 0.5 * bce + 0.5 * dice_loss
+    inter = (probs * targets_f).sum(dim=(1, 2, 3))
+    union = (probs + targets_f).sum(dim=(1, 2, 3))
+    dice_per_sample = 1.0 - ((2.0 * inter + 1.0) / (union + 1.0))
+    if sample_weights is not None:
+        w = sample_weights / (sample_weights.mean() + 1e-6)
+        return 0.5 * (bce_per_sample * w).mean() + 0.5 * (dice_per_sample * w).mean()
+    return 0.5 * bce_per_sample.mean() + 0.5 * dice_per_sample.mean()
 
 
-def asymmetric_tversky_loss(logits: torch.Tensor, targets: torch.Tensor, alpha_fp: float = 0.6, beta_fn: float = 0.4) -> torch.Tensor:
-    """Precision-aware Tversky overlap loss (alpha_fp > beta_fn) to suppress false-positive blobs on small polyps."""
+def asymmetric_tversky_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    alpha_fp: float = 0.6,
+    beta_fn: float = 0.4,
+    sample_weights: torch.Tensor | None = None,
+) -> torch.Tensor:
     probs = torch.sigmoid(logits.float())
     y = targets.float()
     dims = (1, 2, 3)
@@ -64,19 +76,34 @@ def asymmetric_tversky_loss(logits: torch.Tensor, targets: torch.Tensor, alpha_f
     fp = (probs * (1.0 - y)).sum(dims)
     fn = ((1.0 - probs) * y).sum(dims)
     tversky = (tp + 1.0) / (tp + alpha_fp * fp + beta_fn * fn + 1.0)
-    return (1.0 - tversky).mean()
+    loss_per_sample = 1.0 - tversky
+    if sample_weights is not None:
+        w = sample_weights / (sample_weights.mean() + 1e-6)
+        return (loss_per_sample * w).mean()
+    return loss_per_sample.mean()
 
 
 def compute_total_loss(outputs: dict, masks: torch.Tensor, cfg, epoch: int = 1) -> torch.Tensor:
     logits = outputs["logits"]
-    region_loss = bce_dice_loss(logits, masks)
-    tversky_loss = asymmetric_tversky_loss(logits, masks, alpha_fp=0.60, beta_fn=0.40)
-    loss = region_loss + 0.20 * tversky_loss
+    if getattr(cfg, "use_proto_dpt", False):
+        # Scale-adaptive lesion weighting so tiny (<1.5% area) polyps receive strong recall-preserving supervision
+        area_pct = masks.float().mean(dim=(1, 2, 3)) * 100.0
+        sample_w = ((3.0 / (area_pct + 0.30)) ** 0.45).clamp(1.0, 2.6).detach()
+        alpha_fp, beta_fn = 0.45, 0.55
+    else:
+        sample_w = None
+        alpha_fp, beta_fn = 0.60, 0.40
+
+    region_loss = bce_dice_loss(logits, masks, sample_weights=sample_w)
+    tversky_loss = asymmetric_tversky_loss(logits, masks, alpha_fp=alpha_fp, beta_fn=beta_fn, sample_weights=sample_w)
+    loss = region_loss + 0.25 * tversky_loss
 
     if outputs.get("proto_logits") is not None:
         p_logits = outputs["proto_logits"]
         proto_gt = F.adaptive_avg_pool2d(masks.float(), p_logits.shape[-2:])
-        proto_loss = bce_dice_loss(p_logits, proto_gt) + 0.20 * asymmetric_tversky_loss(p_logits, proto_gt)
+        proto_loss = bce_dice_loss(p_logits, proto_gt, sample_weights=sample_w) + 0.25 * asymmetric_tversky_loss(
+            p_logits, proto_gt, alpha_fp=alpha_fp, beta_fn=beta_fn, sample_weights=sample_w
+        )
         loss = loss + getattr(cfg, "proto_loss_weight", 0.35) * proto_loss
 
     if cfg.use_boundary_loss:
@@ -395,7 +422,7 @@ def train_and_select_best(
 
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(device_type=device.type, dtype=amp_dtype, enabled=(device.type == "cuda")):
-                outputs = model(images)
+                outputs = model(images, gt_mask=masks)
                 loss = compute_total_loss(outputs, masks, cfg, epoch=epoch)
 
             if use_scaler:
