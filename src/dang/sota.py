@@ -14,6 +14,9 @@ ImageNet weights come from timm instead of the authors' local .pth files.
             PVTv2-B2 -> timm pvt_v2_b2.in1k, decoder vendored verbatim (third_party/emcad_decoders.py)
             loss: structure on p4,p3,p2,p1 and on their sum; inference: p1 (= P[-1])
 
+With cfg.loss_mode == "shared" the DANG loss (train.compute_total_loss) is used instead; its deep-supervision
+term reads `aux_logits` (the side outputs other than the inference output).
+
 The backbone is stored as `self.cnn` so the shared optimizer gives it the backbone learning rate.
 """
 
@@ -162,7 +165,8 @@ class PraNetModel(nn.Module):
         x = self.ra2_conv4(x) + crop_2
         lateral_map_2 = F.interpolate(x, scale_factor=8, mode="bilinear")
 
-        return {"logits": lateral_map_2, "side_outputs": [lateral_map_5, lateral_map_4, lateral_map_3, lateral_map_2]}
+        return {"logits": lateral_map_2, "side_outputs": [lateral_map_5, lateral_map_4, lateral_map_3, lateral_map_2],
+                "aux_logits": [lateral_map_5, lateral_map_4, lateral_map_3]}
 
     @staticmethod
     def official_loss(outputs, masks):
@@ -295,7 +299,7 @@ class PolypPVTModel(nn.Module):
         sam_feature = self.SAM(cfm_feature, T2)
         p1 = F.interpolate(self.out_CFM(cfm_feature), scale_factor=8, mode="bilinear")
         p2 = F.interpolate(self.out_SAM(sam_feature), scale_factor=8, mode="bilinear")
-        return {"logits": p1 + p2, "side_outputs": [p1, p2]}
+        return {"logits": p1 + p2, "side_outputs": [p1, p2], "aux_logits": [p1, p2]}
 
     @staticmethod
     def official_loss(outputs, masks):
@@ -329,7 +333,7 @@ class EMCADModel(nn.Module):
         p3 = F.interpolate(self.out_head3(dec_outs[1]), scale_factor=16, mode="bilinear")
         p2 = F.interpolate(self.out_head2(dec_outs[2]), scale_factor=8, mode="bilinear")
         p1 = F.interpolate(self.out_head1(dec_outs[3]), scale_factor=4, mode="bilinear")
-        return {"logits": p1, "side_outputs": [p4, p3, p2, p1]}
+        return {"logits": p1, "side_outputs": [p4, p3, p2, p1], "aux_logits": [p4, p3, p2]}
 
     @staticmethod
     def official_loss(outputs, masks):

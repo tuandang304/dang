@@ -4,9 +4,14 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "r10e_dang_med_v4_1_flagship_s45_46"
+    variant_name: str = "r11f_polyp_pvt_shared_loss_5seed"
     seed: int = 42
-    seeds: tuple[int, ...] = (45, 46)
+    # External SOTA selector (dang/sota.py) and loss: "shared" = Eq. (9) of the paper, "official" = method's own loss
+    arch: str = "polyp_pvt"
+    loss_mode: str = "shared"
+    # Write binary predicted masks for this seed to $ORX_OUTPUT_DIR/pred_masks_seed<N>.zip (None = off)
+    dump_pred_seed: int | None = 42
+    seeds: tuple[int, ...] = (42, 43, 44, 45, 46)
 
     # Stress-test S1 (5% Few-Shot Kvasir = 40 images) + Full 100% (800 images)
     run_s1_10pct: bool = True
@@ -15,19 +20,19 @@ class ExperimentConfig:
 
     # Architecture knobs
     cnn_backbone: str = "convnext_tiny.fb_in22k_ft_in1k_384"
-    use_dinov2: bool = True
+    use_dinov2: bool = False
     vit_backbone: str = "vit_base_patch14_dinov2.lvd142m"
-    peft_mode: str = "freq_moe_conv_lora"
+    peft_mode: str = "none"
     lora_rank: int = 4
     adapter_start_block: int = 8
 
     # DANG-Med v4.1 Breakthrough Pillars
-    use_proto_dpt: bool = True           # Pillar A: 4-Scale DPT Reassembly + Supervised Prototype & Self-Support Margin Prior
-    use_passe_envelope: bool = True      # Pillar A+: Prototype-Anchored Spatial Support Envelope (suppresses far-field FP specks)
-    use_style_calib: bool = True         # Pillar B: Zero-Shot Retinex Chromatic Stem + DINO-Conditioned Style Calibrator
-    use_fast_strip_ssm: bool = True      # Fast Multi-Scale Axial Strip-SSM (replaces 168-cat Python scan loop)
-    fusion_mode: str = "proto_dpt_strip_ssa"   # "none" | "safe_concat" | "safe_gd_ssa_v2" | "proto_dpt_strip_ssa"
-    decoder_mode: str = "uncertainty_strip_ssm"  # "fpn" | "detail_a2bd_v2" | "uncertainty_strip_ssm"
+    use_proto_dpt: bool = False
+    use_passe_envelope: bool = False
+    use_style_calib: bool = False
+    use_fast_strip_ssm: bool = False
+    fusion_mode: str = "none"
+    decoder_mode: str = "fpn"
     embed_dim: int = 192
     proto_dim: int = 128
     num_prototypes: int = 8
