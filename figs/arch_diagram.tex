@@ -1,4 +1,4 @@
-% Shared TikZ scaffold for OpenResearch figures.
+% DANG-Med architecture. Compile: pdflatex figs/arch_diagram.tex (standalone, builds at full text width).
 \documentclass[border=2pt]{standalone}
 \usepackage{tikz}
 \usepackage{amsmath}
@@ -8,73 +8,77 @@
 \definecolor{orxorange}{HTML}{E69F00}
 \definecolor{orxgreen}{HTML}{009E73}
 \definecolor{orxred}{HTML}{D55E00}
-\definecolor{orxpurple}{HTML}{CC79A7}
 
 \tikzset{
   orx/.style={
     font=\sffamily\footnotesize,
     >={Stealth[round, length=4pt, width=3pt]},
     line width=0.5pt,
-    node distance=4.5mm and 8.5mm,
+    node distance=5mm and 6mm,
   },
   block/.style={
     draw=black!55, fill=white, rounded corners=1pt,
-    minimum height=6.5mm, minimum width=17mm, inner sep=2.5pt, align=center,
+    minimum height=9mm, text width=19mm, inner sep=2pt, align=center,
   },
-  ours/.style={block, draw=orxblue, fill=orxblue!7, line width=0.7pt},
-  muted/.style={block, draw=black!30, fill=black!3, text=black!65},
+  ours/.style={block, draw=orxblue, fill=orxblue!8, line width=0.7pt},
+  muted/.style={block, draw=black!35, fill=black!4, text=black!70},
   data/.style={
     draw=black!45, fill=black!2, trapezium,
     trapezium left angle=78, trapezium right angle=102,
-    minimum height=6mm, inner sep=2pt, align=center,
+    minimum height=7mm, inner sep=2pt, align=center,
   },
-  stage/.style={
-    draw=black!25, dashed, rounded corners=2pt, inner sep=3.5pt, fill=black!1,
-  },
-  stagelbl/.style={font=\sffamily\scriptsize, text=black!55},
+  lane/.style={draw=black!20, dashed, rounded corners=2pt, inner sep=2.5pt},
+  lanelbl/.style={font=\sffamily\scriptsize, text=black!55},
   flow/.style={->, draw=black!70},
-  backflow/.style={->, densely dashed, draw=orxred!85},
-  edgelbl/.style={font=\sffamily\scriptsize, text=black!65, inner sep=1.2pt},
+  cond/.style={->, densely dashed, draw=orxblue!80},
+  edgelbl/.style={font=\sffamily\scriptsize, text=black!70, inner sep=1.2pt},
+  sub/.style={font=\sffamily\scriptsize, text=black!60},
 }
 
 \begin{document}
 \begin{tikzpicture}[orx]
 
-  \node[data] (input) {Input\\$352\times 352$};
-  \node[ours, right=of input] (stem) {Zero-Shot\\Retinex Stem};
+  % ---- inputs and stem
+  \node[data] (input) {RGB frame\\$352^2$};
+  \node[ours, right=5mm of input, text width=15mm] (stem) {Retinex\\chromatic stem};
 
-  \node[block, above right=2mm and 9mm of stem] (cnn) {ConvNeXt-T\\Stages $s_4..s_{32}$};
-  \node[muted, below right=2mm and 9mm of stem] (vit) {Frozen DINOv2-B\\+ Freq-MoE LoRA};
+  % ---- two streams
+  \node[block, above right=4mm and 6mm of stem, text width=25mm] (cnn) {ConvNeXt-T\\{\scriptsize stages $s_4\!\ldots s_{32}$}};
+  \node[muted, below right=4mm and 6mm of stem, text width=25mm] (vit) {DINOv2-B, frozen\\{\scriptsize + Freq-MoE LoRA}};
 
-  \node[ours, right=of cnn] (calib) {DINO StyleCalib\\+ 4-Scale DPT};
-  \node[ours, right=of vit] (proto) {Dual-Prototype\\+ Self-Support};
+  \node[ours, right=6mm of cnn] (calib) {DINO style\\calibration {\scriptsize ($s_4,s_8$)}};
+  \node[ours, right=6mm of vit] (dpt) {4-scale DPT\\reassembler};
 
-  \node[ours, right=of calib] (gdssa) {ProtoDPT\\Strip-GD-SSA};
-  \node[ours, right=of proto] (passe) {PASSE Envelope\\$\mathcal{E}_{\mathrm{env}}$ ($25^2\to 88^2$)};
+  % ---- fusion and prototype head
+  \node[ours, right=of $(calib.east)!0.5!(dpt.east)$] (fuse) {Strip GD-SSA\\fusion {\scriptsize ($s_8..s_{32}$)}};
+  \node[ours, below=5mm of fuse |- dpt.south, anchor=north] (proto) {Dual-prototype\\+ self-support};
 
-  \node[ours, right=9mm of $(gdssa.east)!0.5!(passe.east)$] (dec) {Uncertainty\\Strip-SSM Dec.};
-  \node[data, right=of dec] (out) {Mask\\$352\times 352$};
+  \node[ours, right=6mm of fuse, text width=21mm] (dec) {Uncertainty strip\\decoder {\scriptsize $u{=}4p(1{-}p)$}};
+  \node[ours, anchor=north, text width=14mm] (passe) at (dec.south |- proto.north) {PASSE\\envelope};
+  \node[data, right=4mm of dec] (out) {Mask\\$352^2$};
 
+  % ---- edges
   \draw[flow] (input) -- (stem);
-  \draw[flow] (stem.east) -- ++(3mm,0) |- node[edgelbl, pos=0.7, above] {$352^2$} (cnn.west);
-  \draw[flow] (stem.east) -- ++(3mm,0) |- node[edgelbl, pos=0.7, below] {$350^2$} (vit.west);
-
+  \draw[flow] (stem.east) -- ++(2.5mm,0) |- (cnn.west);
+  \draw[flow] (stem.east) -- ++(2.5mm,0) |- (vit.west);
   \draw[flow] (cnn) -- node[edgelbl, above] {$F_{\mathrm{loc}}$} (calib);
-  \draw[flow] (vit) -- node[edgelbl, below] {$25\times 25$} (proto);
-  \draw[flow] (vit.north east) -- (calib.south west);
-
-  \draw[flow] (calib) -- (gdssa);
-  \draw[flow] (proto.north) -- node[edgelbl, right] {$\pi_{\mathrm{proto}}$} (gdssa.south);
-  \draw[flow] (proto) -- (passe);
-
-  \draw[flow] (gdssa.east) -- ++(3mm,0) |- (dec.west);
-  \draw[flow] (passe.east) -- ++(3mm,0) |- node[edgelbl, pos=0.65, below] {gate} (dec.west);
+  \draw[flow] (vit) -- node[edgelbl, above] {$25^2$} (dpt);
+  \draw[cond] (vit.north) -- node[edgelbl, right, pos=0.5] {$g_{\mathrm{dino}}$} (vit.north |- calib.south) -- (calib.south west);
+  \draw[flow] (calib.east) -- ++(2.5mm,0) |- (fuse.west);
+  \draw[flow] (dpt.east) -- ++(2.5mm,0) |- node[edgelbl, pos=0.25, right] {$\hat S_s$} (fuse.west);
+  \draw[flow] (dpt.south) |- node[edgelbl, pos=0.75, below] {$[S_1,S_2,S_3]$} (proto.west);
+  \draw[flow] (fuse) -- (dec);
+  \draw[flow] (proto) -- node[edgelbl, above] {$\pi_{\mathrm{proto}}$} (passe);
+  \draw[flow] (passe) -- node[edgelbl, right, align=left] {$\mathcal{E}_{\mathrm{env}}$, $P_{\mathrm{sem}}$\\[-1pt]at stride 4} (dec);
   \draw[flow] (dec) -- (out);
 
+  % ---- lane labels
   \begin{scope}[on background layer]
-    \node[stage, fit=(cnn)(vit)(calib)(proto)(gdssa)(passe)] (trunk) {};
+    \node[lane, fit=(cnn)(calib)] (local) {};
+    \node[lane, fit=(vit)(dpt)] (sem) {};
   \end{scope}
-  \node[stagelbl, above=0.8mm of trunk] {DANG-Med Dual-Stream Alignment \& Support Core};
+  \node[lanelbl, above=0.5mm of local] {local stream (trainable CNN)};
+  \node[lanelbl, below=0.5mm of sem.south west, anchor=north west] {semantic stream (foundation model)};
 
 \end{tikzpicture}
 \end{document}
