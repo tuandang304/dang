@@ -1,4 +1,4 @@
-"""5-seed publication figures for paper.tex (Round 9/10 suite, seeds 42-46).
+"""5-seed publication figures for paper.tex (seeds 42-46).
 
 Reads figs/seed_metrics.json written by figs/aggregate_seeds.py from the raw run logs.
 Regenerate:
@@ -27,9 +27,9 @@ T95_DF4 = 2.776  # two-sided 95% t critical value, df = 4 (5 paired seeds)
 BLUES = family("blue", 2)
 ARMS = [
     ("baseline", "ConvNeXt-T + FPN baseline", MUTED),
-    ("safeconcat", "Dual-stream SafeConcat control", PALETTE["orange"]),
-    ("protodpt_passe", "ProtoDPT + PASSE + UncStrip (no stem)", BLUES[0]),
-    ("flagship", "DANG-Med v4.1 (full)", BLUES[1]),
+    ("safeconcat", "Dual-stream concatenation control", PALETTE["orange"]),
+    ("protodpt_passe", "DANG without stem", BLUES[0]),
+    ("flagship", "DANG (full)", BLUES[1]),
 ]
 # darker companions for the mean bar and interval, so light fills stay legible
 DARK = ["#6E6E6E", "#B07800", "#3C8FC0", "#004F7C"]
@@ -122,8 +122,8 @@ def deltas():
     n = len(DELTA_ROWS)
     y = np.arange(n)[::-1].astype(float)
     split = next(i for i, (k, _) in enumerate(DELTA_ROWS) if k.startswith("full"))
-    comps_a = [("protodpt_passe", "ProtoDPT + PASSE + UncStrip (no stem)", BLUES[0], 0.16),
-               ("flagship", "DANG-Med v4.1 (full)", BLUES[1], -0.16)]
+    comps_a = [("protodpt_passe", "DANG without stem", BLUES[0], 0.16),
+               ("flagship", "DANG (full)", BLUES[1], -0.16)]
     for ax in axes:
         for i in range(n):  # zebra rows
             if i % 2 == 0:
