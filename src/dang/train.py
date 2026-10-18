@@ -1,4 +1,5 @@
 import copy
+import io
 import json
 import math
 import os
@@ -7,6 +8,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import random
 import time
+import zipfile
 from collections import defaultdict
 from pathlib import Path
 
@@ -14,11 +16,29 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from PIL import Image
 
 from dang.config import get_config
 from dang.data import prepare_all_cohorts, build_dataloaders_for_seed, decode_binary_mask_np
 from dang.metrics import compute_sample_metrics, aggregate_metrics, compute_binary_dice
 from dang.model import DANGModel
+from dang.sota import SOTA_MODELS
+
+
+def build_model(cfg) -> nn.Module:
+    """DANG variants by default; cfg.arch selects an external SOTA baseline (dang/sota.py)."""
+    arch = getattr(cfg, "arch", "dang")
+    if arch in SOTA_MODELS:
+        return SOTA_MODELS[arch](cfg)
+    return DANGModel(cfg)
+
+
+def dump_pred_mask(dump, uid: str, pred_bin: np.ndarray) -> None:
+    """Write one binary prediction (threshold 0.5, 352x352) as a PNG into the open zip `dump=(zf, prefix)`."""
+    zf, prefix = dump
+    buf = io.BytesIO()
+    Image.fromarray(pred_bin.astype(np.uint8) * 255).save(buf, format="PNG", optimize=True)
+    zf.writestr(f"{prefix}/{uid.replace('/', '__')}.png", buf.getvalue())
 
 
 def seed_everything(seed: int):
@@ -237,6 +257,7 @@ def evaluate_loader(
     amp_dtype: torch.dtype,
     uid_lookup: dict | None = None,
     full_metrics: bool = False,
+    dump=None,
 ) -> dict:
     model.eval()
     all_records = []
@@ -274,6 +295,8 @@ def evaluate_loader(
                     dice_nat = compute_binary_dice(pred_nat, gt_nat)
 
                 rec = compute_sample_metrics(p_i, m_i, dice_native=dice_nat)
+                if dump is not None:
+                    dump_pred_mask(dump, uid, p_i >= 0.5)
                 rec["name"] = names[i]
                 rec["domain"] = domains[i]
                 rec["uid"] = uid
@@ -443,7 +466,10 @@ def train_and_select_best(
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(device_type=device.type, dtype=amp_dtype, enabled=(device.type == "cuda")):
                 outputs = model(images, gt_mask=masks)
-                loss = compute_total_loss(outputs, masks, cfg, epoch=epoch)
+                if getattr(cfg, "loss_mode", "shared") == "official":
+                    loss = model.official_loss(outputs, masks)
+                else:
+                    loss = compute_total_loss(outputs, masks, cfg, epoch=epoch)
 
             if use_scaler:
                 scaler.scale(loss).backward()
@@ -545,6 +571,14 @@ def main():
 
         loaders = build_dataloaders_for_seed(cohorts, cfg, seed)
 
+        dump_zip = None
+        if getattr(cfg, "dump_pred_seed", None) == seed:
+            dump_path = top_out / f"pred_masks_seed{seed}.zip"
+            dump_zip = zipfile.ZipFile(dump_path, "w", compression=zipfile.ZIP_DEFLATED)
+
+        def dmp(tag):
+            return (dump_zip, tag) if dump_zip is not None else None
+
         # ---------------------------------------------------------------------
         # TRACK 1: S1 (5% Few-Shot Kvasir = 40 images) + S1xS2 + S1xS3
         # ---------------------------------------------------------------------
@@ -554,7 +588,7 @@ def main():
             print(f"[Seed {seed}] TRACK S1: 5% Few-Shot Kvasir Training (n=40, {cfg.s1_epochs} epochs)")
             print("-" * 88, flush=True)
             seed_everything(seed + 10000)
-            s1_model = DANGModel(cfg).to(device)
+            s1_model = build_model(cfg).to(device)
             s1_ema = copy.deepcopy(s1_model).to(device)
             s1_ema.eval()
 
@@ -572,11 +606,11 @@ def main():
                 tag=f"S1-5pct Seed {seed}",
             )
 
-            s1_id = evaluate_loader(s1_model, loaders["id_test"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True)
-            s1_ood_dev = evaluate_loader(s1_model, loaders["ood_dev"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True)
-            s1_pranet = evaluate_loader(s1_model, loaders["pranet_ext"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True)
-            s1_s2_tiny_camo = evaluate_loader(s1_model, loaders["s2_tiny_camo"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True)
-            s1_s3_adverse = evaluate_loader(s1_model, loaders["s3_adverse"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True)
+            s1_id = evaluate_loader(s1_model, loaders["id_test"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True, dump=dmp("s1/id_test"))
+            s1_ood_dev = evaluate_loader(s1_model, loaders["ood_dev"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True, dump=dmp("s1/ood_dev"))
+            s1_pranet = evaluate_loader(s1_model, loaders["pranet_ext"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True, dump=dmp("s1/pranet_ext"))
+            s1_s2_tiny_camo = evaluate_loader(s1_model, loaders["s2_tiny_camo"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True, dump=dmp("s1/s2_tiny_camo"))
+            s1_s3_adverse = evaluate_loader(s1_model, loaders["s3_adverse"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True, dump=dmp("s1/s3_adverse"))
 
             print(f"\n--- SEED {seed} TRACK S1 (5% Few-Shot n=40, Best Ep {s1_best_ep}) STRESS-TEST SUMMARY ---")
             print(
@@ -640,7 +674,7 @@ def main():
         seed_everything(seed)
         loaders = build_dataloaders_for_seed(cohorts, cfg, seed)
 
-        model = DANGModel(cfg).to(device)
+        model = build_model(cfg).to(device)
         ema_model = copy.deepcopy(model).to(device)
         ema_model.eval()
 
@@ -667,13 +701,13 @@ def main():
             tag=f"Full-100% Seed {seed}",
         )
 
-        val_final = evaluate_loader(model, loaders["val"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True)
-        id_final = evaluate_loader(model, loaders["id_test"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True)
-        ood_dev_final = evaluate_loader(model, loaders["ood_dev"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True)
-        ood_ext_final = evaluate_loader(model, loaders["ood_ext"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True)
-        pranet_final = evaluate_loader(model, loaders["pranet_ext"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True)
-        s2_final = evaluate_loader(model, loaders["s2_tiny_camo"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True)
-        s3_final = evaluate_loader(model, loaders["s3_adverse"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True)
+        val_final = evaluate_loader(model, loaders["val"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True, dump=dmp("full/val"))
+        id_final = evaluate_loader(model, loaders["id_test"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True, dump=dmp("full/id_test"))
+        ood_dev_final = evaluate_loader(model, loaders["ood_dev"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True, dump=dmp("full/ood_dev"))
+        ood_ext_final = evaluate_loader(model, loaders["ood_ext"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True, dump=dmp("full/ood_ext"))
+        pranet_final = evaluate_loader(model, loaders["pranet_ext"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True, dump=dmp("full/pranet_ext"))
+        s2_final = evaluate_loader(model, loaders["s2_tiny_camo"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True, dump=dmp("full/s2_tiny_camo"))
+        s3_final = evaluate_loader(model, loaders["s3_adverse"], device, amp_dtype=amp_dtype, uid_lookup=uid_lookup, full_metrics=True, dump=dmp("full/s3_adverse"))
 
         ext_seq_disjoint_recs = [r for r in ood_ext_final["records"] if not r.get("c4_seq_in_dev", False)]
         ext_dhash8_recs = [r for r in ood_ext_final["records"] if r.get("min_kvasir_dhash", 99) > 8]
@@ -767,6 +801,11 @@ def main():
         emit_chunked_records(seed, "pranet_ext", pranet_final["records"])
         emit_chunked_records(seed, "s2_tiny_camo", s2_final["records"])
         emit_chunked_records(seed, "s3_adverse", s3_final["records"])
+
+        if dump_zip is not None:
+            n_files = len(dump_zip.namelist())
+            dump_zip.close()
+            print(f"PRED_MASK_DUMP: seed={seed} files={n_files} path={dump_path}", flush=True)
 
         del model, ema_model
         if device.type == "cuda":
