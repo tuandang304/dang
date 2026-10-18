@@ -489,6 +489,13 @@ def train_and_select_best(
             n_batches += 1
 
         train_loss = running_loss / max(1, n_batches)
+        if val_loader is None:
+            # No validation split (standard PraNet protocol): keep the final EMA weights, never select on test.
+            best_epoch = epoch
+            if epoch == epochs:
+                best_state = {k: v.detach().cpu().clone() for k, v in ema_model.state_dict().items()}
+            print(f"[{tag} | Ep {epoch:02d}/{epochs:02d}] loss={train_loss:.4f} | time={time.time() - ep_t0:.1f}s", flush=True)
+            continue
         val_raw = evaluate_loader(model, val_loader, device, amp_dtype=amp_dtype, full_metrics=False)
         val_ema = evaluate_loader(ema_model, val_loader, device, amp_dtype=amp_dtype, full_metrics=False)
 
@@ -524,6 +531,10 @@ def train_and_select_best(
 
 def main():
     cfg = get_config()
+    if getattr(cfg, "protocol", "dang") == "pranet_standard":
+        from dang.standard_protocol import main_standard
+
+        return main_standard(cfg)
     seeds = list(getattr(cfg, "seeds", (cfg.seed,)))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
