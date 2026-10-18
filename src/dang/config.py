@@ -4,9 +4,9 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "r9e_dang_med_v4_1_flagship"
+    variant_name: str = "r10e_dang_med_v4_1_flagship_s45_46"
     seed: int = 42
-    seeds: tuple[int, ...] = (42,)
+    seeds: tuple[int, ...] = (45, 46)
 
     # Stress-test S1 (5% Few-Shot Kvasir = 40 images) + Full 100% (800 images)
     run_s1_10pct: bool = True
