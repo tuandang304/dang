@@ -521,6 +521,13 @@ def train_and_select_best(
             n_batches += 1
 
         train_loss = running_loss / max(1, n_batches)
+        if val_loader is None:  # no validation split (benchmark protocol): keep training, return the final EMA
+            print(f"[{tag} | Ep {epoch:02d}/{epochs:02d}] loss={train_loss:.4f} "
+                  f"| lr={max(pg['lr'] for pg in optimizer.param_groups):.2e} | time={time.time() - ep_t0:.1f}s",
+                  flush=True)
+            if not math.isfinite(train_loss):
+                raise FloatingPointError(f"non-finite training loss at epoch {epoch}")
+            continue
         val_raw = evaluate_loader(model, val_loader, device, amp_dtype=amp_dtype, full_metrics=False)
         val_ema = evaluate_loader(ema_model, val_loader, device, amp_dtype=amp_dtype, full_metrics=False)
 
@@ -549,6 +556,8 @@ def train_and_select_best(
             flush=True,
         )
 
+    if val_loader is None:
+        return ema_model, epochs, float("nan")
     if best_state is not None:
         model.load_state_dict(best_state)
     return model, best_epoch, best_val_dice
@@ -556,6 +565,9 @@ def train_and_select_best(
 
 def main():
     cfg = get_config()
+    if getattr(cfg, "protocol", "dang") == "bench":
+        from dang.bench.runner import main_bench
+        return main_bench(cfg)
     seeds = list(getattr(cfg, "seeds", (cfg.seed,)))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
