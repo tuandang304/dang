@@ -370,6 +370,7 @@ def measure_efficiency(model: nn.Module, cfg, device: torch.device, amp_dtype: t
             with torch.amp.autocast(device_type="cuda", dtype=amp_dtype):
                 _ = model(dummy)
         torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats(device)
         t0 = time.perf_counter()
         n_iters = 200
         for _ in range(n_iters):
@@ -378,8 +379,10 @@ def measure_efficiency(model: nn.Module, cfg, device: torch.device, amp_dtype: t
         torch.cuda.synchronize()
         elapsed = time.perf_counter() - t0
         fps = n_iters / elapsed
+        peak_mem_mb = torch.cuda.max_memory_allocated(device) / 2**20
     else:
         fps = 0.0
+        peak_mem_mb = 0.0
 
     random.setstate(py_state)
     np.random.set_state(np_state)
@@ -393,6 +396,9 @@ def measure_efficiency(model: nn.Module, cfg, device: torch.device, amp_dtype: t
         "frozen_params_m": round(frozen_params / 1e6, 3),
         "trainable_pct": round(100.0 * trainable_params / max(total_params, 1), 2),
         "fps": round(fps, 2),
+        "latency_ms_bs1": round(1000.0 / fps, 2) if fps > 0 else 0.0,
+        "peak_mem_mb_bs1": round(peak_mem_mb, 1),
+        "gpu_name": torch.cuda.get_device_name(device) if device.type == "cuda" else "cpu",
         "warmup_iters": 50,
         "timed_iters": 200,
     }
@@ -709,7 +715,8 @@ def main():
             print(
                 f"Model Efficiency (50 warmup + 200 timed iters): Total={eff['total_params_m']:.2f}M | "
                 f"Trainable={eff['trainable_params_m']:.2f}M ({eff['trainable_pct']:.2f}%) | "
-                f"Frozen={eff['frozen_params_m']:.2f}M | Speed={eff['fps']:.2f} FPS",
+                f"Frozen={eff['frozen_params_m']:.2f}M | Speed={eff['fps']:.2f} FPS | "
+                f"bs1 latency={eff['latency_ms_bs1']:.2f}ms | peak mem={eff['peak_mem_mb_bs1']:.1f}MB | {eff['gpu_name']}",
                 flush=True,
             )
 
