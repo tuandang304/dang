@@ -156,8 +156,14 @@ class DANGv5(nn.Module):
     def _semantic(self, x):
         v = self.cfg.v5_vit_size
         xv = F.interpolate(x, size=(v, v), mode="bilinear", align_corners=False)
-        feats = self.vit.forward_intermediates(xv, indices=self.vit_layers, norm=True, output_fmt="NCHW",
-                                               intermediates_only=True)
+        if getattr(self.cfg, "v5_vit_fp32", False) and xv.is_cuda:
+            # DINOv3 ViT-L overflows in fp16 on T4 (no bf16); run the semantic stream in fp32
+            with torch.autocast(device_type="cuda", enabled=False):
+                feats = self.vit.forward_intermediates(xv.float(), indices=self.vit_layers, norm=True,
+                                                       output_fmt="NCHW", intermediates_only=True)
+        else:
+            feats = self.vit.forward_intermediates(xv, indices=self.vit_layers, norm=True, output_fmt="NCHW",
+                                                   intermediates_only=True)
         return [proj(f) for proj, f in zip(self.sem_projs, feats)]
 
     @staticmethod
