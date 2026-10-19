@@ -4,7 +4,7 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "v5a_dinov3_convnext_s_vitb"
+    variant_name: str = "v6c_ampmix"
     seed: int = 42
     # External SOTA selector (dang/sota.py) and loss: "shared" = Eq. (9) of the paper, "official" = method's own loss
     arch: str = "dang_v5"
@@ -26,6 +26,7 @@ class ExperimentConfig:
     v5_lora_blocks: int = 4
     v5_lora_rank: int = 8
     bg_loss_weight: float = 0.4
+    amp_mix_prob: float = 0.5                           # Fourier amplitude mix (FACT), per image
 
     # Architecture knobs
     cnn_backbone: str = "convnext_tiny.fb_in22k_ft_in1k_384"

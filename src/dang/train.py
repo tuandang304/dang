@@ -44,6 +44,22 @@ def dump_pred_mask(dump, uid: str, pred_bin: np.ndarray) -> None:
     zf.writestr(f"{prefix}/{uid.replace('/', '__')}.png", buf.getvalue())
 
 
+def amplitude_mix(images: torch.Tensor, prob: float) -> torch.Tensor:
+    """FACT-style Fourier amplitude mix (Xu et al., CVPR 2021): keep each image's phase, linearly mix its amplitude
+    spectrum with that of a random other image in the batch (lambda ~ U(0, 1)); applied per image with prob `prob`."""
+    if prob <= 0 or images.shape[0] < 2:
+        return images
+    B = images.shape[0]
+    x = images.float()
+    f = torch.fft.fft2(x, dim=(-2, -1))
+    amp, pha = f.abs(), f.angle()
+    perm = torch.randperm(B, device=x.device)
+    lam = torch.rand(B, 1, 1, 1, device=x.device)
+    mixed = torch.fft.ifft2(torch.polar((1 - lam) * amp + lam * amp[perm], pha), dim=(-2, -1)).real
+    apply = (torch.rand(B, 1, 1, 1, device=x.device) < prob).to(x.dtype)
+    return (apply * mixed + (1 - apply) * x).to(images.dtype)
+
+
 def seed_everything(seed: int):
     random.seed(seed)
     np.random.seed(seed)
@@ -471,6 +487,7 @@ def train_and_select_best(
 
             images = batch["image"].to(device, non_blocking=True)
             masks = batch["mask"].to(device, non_blocking=True)
+            images = amplitude_mix(images, getattr(cfg, "amp_mix_prob", 0.0))
 
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(device_type=device.type, dtype=amp_dtype, enabled=(device.type == "cuda")):
