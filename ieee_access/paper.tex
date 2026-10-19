@@ -81,9 +81,9 @@ We present \textbf{DANG} (Figure~\ref{fig:arch}) and make three contributions:
 \end{itemize}
 
 \section{Related Work}
-\paragraph{Polyp segmentation.} Architectures progressed from U-Net~\cite{ronneberger2015unet} and UNet++~\cite{zhou2018unetplusplus} to reverse-attention networks: PraNet~\cite{fan2020pranet} mines boundary cues with parallel partial decoders and reverse attention, and CaraNet~\cite{lou2022caranet} adds axial context for small objects. Transformer encoders improved multi-centre generalisation in Polyp-PVT~\cite{dong2021polyp} and TransFuse~\cite{zhang2021transfuse}, and EMCAD~\cite{rahman2024emcad} pairs a PVTv2 encoder with an efficient multi-scale convolutional attention decoder. Label-efficient work on polyps has mostly been semi-supervised; FPGM~\cite{xi2025fpgm}, for example, uses a frequency prior on polyp edges to augment unlabelled images and improve generalisation to new centres. DANG instead uses no unlabelled data and draws its prior from a frozen foundation model.
+\paragraph{Polyp segmentation.} Architectures progressed from U-Net~\cite{ronneberger2015unet} and UNet++~\cite{zhou2018unetplusplus} to reverse-attention networks: PraNet~\cite{fan2020pranet} mines boundary cues with parallel partial decoders and reverse attention, and CaraNet~\cite{lou2022caranet} adds axial context for small objects. Transformer encoders improved multi-centre generalisation in Polyp-PVT~\cite{dong2021polyp} and TransFuse~\cite{zhang2021transfuse}, and EMCAD~\cite{rahman2024emcad} pairs a PVTv2 encoder with an efficient multi-scale convolutional attention decoder. Recent models refine the decoder further: PraNet-V2~\cite{hu2026pranetv2} supervises the background explicitly inside reverse attention, ASGNet~\cite{sun2026asgnet} guides ResNet or PVTv2 features with an adaptive spectral filter, and CSG-Mamba~\cite{wang2026csgmamba} adds convolutional gating to a vision state-space U-Net. Their reported gains are hard to compare: an audit of $27$ polyp segmentation papers~\cite{urooj2026metrics} found at least five incompatible train/test splits of the same datasets, and $26$ of the papers reported no significance test. Label-efficient work on polyps has mostly been semi-supervised; FPGM~\cite{xi2025fpgm}, for example, uses a frequency prior on polyp edges to augment unlabelled images and improve generalisation to new centres. DANG instead uses no unlabelled data and draws its prior from a frozen foundation model.
 
-\paragraph{Foundation models for polyps.} SAM applied without prompts segments polyps poorly~\cite{zhou2023samPolyps}, and MedSAM~\cite{ma2024medsam} fine-tunes SAM on a large medical corpus but requires box prompts. SAM-Mamba~\cite{dutta2024sammamba} and SAM-MaGuP~\cite{dutta2025sammagup} adapt SAM with Mamba-based priors for zero-shot polyp generalisation, at about $103$M parameters and $423$~GFLOPs~\cite{agnihotri2026litebound}. A second line distils foundation models into small networks: Polyp-DiFoM~\cite{agnihotri2025difom} distils SAM and DINOv2 into lightweight baselines, LiteBounD~\cite{agnihotri2026litebound} adds boundary-guided frequency-aware distillation, and Lite-$\pi$~\cite{agnihotri2026litepi} aligns foundation-model-specific prototypes with a lightweight network for real-time inference. DANG keeps the foundation model at inference and studies how to use its features when labels are scarce; distillation is complementary and could compress it.
+\paragraph{Foundation models for polyps.} SAM applied without prompts segments polyps poorly~\cite{zhou2023samPolyps}, and MedSAM~\cite{ma2024medsam} fine-tunes SAM on a large medical corpus but requires box prompts. SAM~3 is being adapted in the same way: Medical SAM3~\cite{jiang2026medsam3} fully fine-tunes it on $33$ medical datasets, SAM3-Adapter~\cite{chen2025sam3adapter} trains lightweight adapters, and HAT-SAM3~\cite{li2026hatsam3} adapts it to colonoscopy with a highlight-aware boundary regulariser and also reports Kvasir-to-external transfer, close to our setting. SAM-Mamba~\cite{dutta2024sammamba} and SAM-MaGuP~\cite{dutta2025sammagup} adapt SAM with Mamba-based priors for zero-shot polyp generalisation, at about $103$M parameters and $423$~GFLOPs~\cite{agnihotri2026litebound}. A second line distils foundation models into small networks: Polyp-DiFoM~\cite{agnihotri2025difom} distils SAM and DINOv2 into lightweight baselines, LiteBounD~\cite{agnihotri2026litebound} adds boundary-guided frequency-aware distillation, and Lite-$\pi$~\cite{agnihotri2026litepi} aligns foundation-model-specific prototypes with a lightweight network for real-time inference. DANG keeps the foundation model at inference and studies how to use its features when labels are scarce; distillation is complementary and could compress it.
 
 \paragraph{Prototype-based segmentation.} Few-shot semantic segmentation classifies query pixels by their similarity to class prototypes computed from support images~\cite{wang2019panet}. Self-support prototypes~\cite{fan2022ssp} are built from confident features of the query image itself, which narrows the gap between support and query appearance. DANG adopts this self-support idea inside a fully supervised segmenter: learned prototypes and ground-truth anchors give a prior, and image-specific self-support centroids adapt it at test time.
 
@@ -187,7 +187,7 @@ PolypGen-Ext was not inspected during design and serves as a confirmation cohort
 \subsection{Training and Models}
 All models are trained at $352\times352$ with batch size $16$, AdamW, warm-up followed by cosine decay, gradient clipping, mixed precision, random scaling, flips, $90^\circ$ rotations and mild colour jitter, for $40$ epochs on the $40$-label subset and $20$ epochs on the $800$ images. After each epoch we evaluate both the raw weights and their exponential moving average on the validation set and keep the better checkpoint; test sets are never used for selection. Appendix~\ref{app:impl} lists all hyperparameters.
 
-PraNet, Polyp-PVT and EMCAD use their official architectures, ImageNet-pretrained backbones (Res2Net-50 and PVTv2-B2) and official losses, with our optimiser, schedule, augmentation and evaluation. Our in-house models are a ConvNeXt-Tiny + FPN baseline; a \emph{concatenation control} that adds the same frozen DINOv2 and adapters as DANG and fuses the two streams by concatenation into an FPN decoder; DANG without the stem and style calibration; and DANG.
+Because published scores rest on incompatible splits and are rarely tested for significance~\cite{urooj2026metrics}, we retrain every compared model under this protocol instead of copying reported numbers. PraNet, Polyp-PVT and EMCAD use their official architectures, ImageNet-pretrained backbones (Res2Net-50 and PVTv2-B2) and official losses, with our optimiser, schedule, augmentation and evaluation. Our in-house models are a ConvNeXt-Tiny + FPN baseline; a \emph{concatenation control} that adds the same frozen DINOv2 and adapters as DANG and fuses the two streams by concatenation into an FPN decoder; DANG without the stem and style calibration; and DANG.
 
 \subsection{Metrics and Statistics}
 \label{sec:stats}
@@ -289,6 +289,7 @@ DANG is the most expensive model in Table~\ref{tab:sota}: $129.9$M parameters, o
   \item \textbf{Synthetic and derived cohorts.} The adverse cohort is synthetic rather than paired physical NBI/white-light acquisitions, and both stress cohorts are slices of the external cohorts.
   \item \textbf{Statistical power.} Five seeds give four degrees of freedom and the standard-split experiment three; several raw $p<0.05$ effects do not survive correction.
   \item \textbf{Confounded prototype loss.} Models with the prototype head also receive $\mathcal{L}_{\text{proto}}$, and we have not run a factorial over PASSE, the prototype loss and the strip decoder.
+  \item \textbf{Foundation-model baselines.} We retrain CNN and transformer polyp models but no SAM-based model such as HAT-SAM3~\cite{li2026hatsam3}; DANG's comparison with foundation-model methods rests on the concatenation control, which uses the same frozen DINOv2.
   \item \textbf{Scope.} We evaluate single frames, not video, and report no clinical reader study.
   \item \textbf{Cost.} DANG is $2$--$2.5\times$ slower than the retrained models and has $4$--$5\times$ more parameters.
 \end{enumerate}
@@ -417,11 +418,25 @@ The authors would like to express their sincere appreciation to the Vietnam Aero
 
 \bibitem{zhang2021transfuse} Y. Zhang, H. Liu, and Q. Hu, ``TransFuse: Fusing transformers and CNNs for medical image segmentation,'' in \emph{Proc. Med. Image Comput. Comput. Assist. Interv. (MICCAI)}, 2021, pp. 14--24.
 
+\bibitem{hu2026pranetv2} B.-C. Hu, G.-P. Ji, D. Shao, and D.-P. Fan, ``PraNet-V2: Dual-supervised reverse attention for medical image segmentation,'' \emph{Comput. Vis. Media}, 2026, doi: 10.26599/CVM.2025.9450510.
+
+\bibitem{sun2026asgnet} Y. Sun \emph{et al.}, ``ASGNet: Adaptive spectrum guidance network for automatic polyp segmentation,'' \emph{IEEE Trans. Circuits Syst. Video Technol.}, 2026, doi: 10.1109/TCSVT.2026.3685209.
+
+\bibitem{wang2026csgmamba} Y. Wang, J. Wu, J. Song, and S. Ren, ``CSG-Mamba: A convolutional scoring gating vision state space network for endoscopic polyp segmentation,'' 2026, \emph{arXiv:2608.14146}.
+
+\bibitem{urooj2026metrics} A. Urooj, Z. U. Abdien, and N. Madan, ``Metrics or mirage? An audit of evaluation inconsistencies in colonoscopy polyp segmentation benchmarks,'' 2026, \emph{arXiv:2607.08203}.
+
 \bibitem{xi2025fpgm} H. Xi \emph{et al.}, ``Frequency prior guided matching: A data augmentation approach for generalizable semi-supervised polyp segmentation,'' 2025, \emph{arXiv:2508.06517}.
 
 \bibitem{zhou2023samPolyps} T. Zhou, Y. Zhang, Y. Zhou, Y. Wu, and C. Gong, ``Can SAM segment polyps?'' 2023, \emph{arXiv:2304.07583}.
 
 \bibitem{ma2024medsam} J. Ma, Y. He, F. Li, L. Han, C. You, and B. Wang, ``Segment anything in medical images,'' \emph{Nature Commun.}, vol. 15, Art. no. 654, 2024.
+
+\bibitem{jiang2026medsam3} C. Jiang \emph{et al.}, ``Medical SAM3: A foundation model for universal prompt-driven medical image segmentation,'' 2026, \emph{arXiv:2601.10880}.
+
+\bibitem{chen2025sam3adapter} T. Chen \emph{et al.}, ``SAM3-Adapter: Efficient adaptation of Segment Anything 3 for camouflage object segmentation, shadow detection, and medical image segmentation,'' 2025, \emph{arXiv:2511.19425}.
+
+\bibitem{li2026hatsam3} H. L. Li and A. Masood, ``HAT-SAM3: Endoscopy-aware adaptation of a foundation segmentation model for generalizable polyp segmentation,'' \emph{Vis. Comput.}, 2026, doi: 10.1007/s00371-026-04562-3.
 
 \bibitem{dutta2024sammamba} T. K. Dutta, S. Majhi, D. R. Nayak, and D. Jha, ``SAM-Mamba: Mamba guided SAM architecture for generalized zero-shot polyp segmentation,'' 2024, \emph{arXiv:2412.08482}.
 
