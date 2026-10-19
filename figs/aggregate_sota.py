@@ -1,6 +1,6 @@
 """Aggregate the retrained SOTA baselines (Round 11) and the standard-split runs (Round 12).
 
-Round 11: PraNet, Polyp-PVT, EMCAD (official losses) and Polyp-PVT with the DANG shared loss, trained
+Round 11: PraNet, Polyp-PVT, EMCAD, PraNet-V2 (official losses) and Polyp-PVT with the DANG shared loss, trained
 under the DANG protocol (seeds 42-46, same splits, same evaluation). Seed s of every arm sees the same
 S1 subset and data order, so differences to DANG-Med are paired by seed.
 Round 12: DANG-Med and Polyp-PVT on the PraNet training split (1450 images), seeds 42-44.
@@ -28,6 +28,7 @@ R11 = {
     "polyp_pvt": "6993f62a-9521-483e-99c1-708d599557ad",
     "emcad": "90a8f6ab-b3e7-4f94-b4d4-c79162b6f63c",
     "polyp_pvt_shared": "d8a6af92-29aa-4203-b7af-e695430bd9fc",
+    "pranet_v2": "2faf0859-97c3-4412-8d33-6fd012f362c9",
 }
 R12 = {
     "dang_std": "665158b8-3242-4b57-bde4-b13741106f26",
