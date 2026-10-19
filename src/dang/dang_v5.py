@@ -142,7 +142,10 @@ class DANGv5(nn.Module):
             # learned depth mixing: one semantic map per fused scale (s8, s16, s32) from all readout depths
             self.depth_logits = nn.Parameter(torch.zeros(3, len(self.vit_layers)))
             self.fuse = nn.ModuleList([GatedSemanticFusion(dim) for _ in range(3)])
-        else:
+        # Privileged mode: the semantic stream is used only at training time (teacher path); inference runs the
+        # local-only student path, so the deployed model is the local stream + local proto head + decoder.
+        self.privileged = self.use_vit and bool(getattr(cfg, "v5_privileged", False))
+        if not self.use_vit or self.privileged:
             self.sem16 = ConvBNAct(dim, dim, kernel_size=3, padding=1)
 
         self.proto_head = DualPrototypeMarginHead(dim=dim, proto_dim=cfg.proto_dim, num_prototypes=cfg.num_prototypes)
@@ -172,22 +175,44 @@ class DANGv5(nn.Module):
         p_up = F.interpolate(p_sem, size=(h, w), mode="bilinear", align_corners=False)
         return logit - 2.2 * F.relu(0.22 - e_up) / 0.22 + 1.2 * F.relu(p_up - 0.38)
 
+    TRAIN_ONLY_PREFIXES = ("vit.", "sem_projs.", "depth_logits", "fuse.")
+
+    def is_deploy_param(self, name: str) -> bool:
+        """False for parameters only the training-time teacher path uses (privileged mode)."""
+        return not (self.privileged and name.startswith(self.TRAIN_ONLY_PREFIXES))
+
+    def _local_proto(self, loc, gt_mask):
+        s16 = self.sem16(loc[2])
+        s32 = F.interpolate(loc[3], size=s16.shape[-2:], mode="bilinear", align_corners=False)
+        return self.proto_head([s16, s16, s32, s16], gt_mask=gt_mask)[0]
+
+    def _fuse_semantic(self, x, loc, gt_mask):
+        sem = self._semantic(x)
+        proto_logits, _ = self.proto_head(sem, gt_mask=gt_mask)
+        w = F.softmax(self.depth_logits, dim=-1)
+        loc = list(loc)
+        for k, li in enumerate((1, 2, 3)):
+            mixed = sum(w[k, j] * s for j, s in enumerate(sem))
+            loc[li] = self.fuse[k](loc[li], mixed)
+        return loc, proto_logits
+
     def forward(self, x, gt_mask=None):
         H, W = x.shape[-2:]
         loc = [proj(f) for proj, f in zip(self.loc_projs, self.cnn(x))]  # s4, s8, s16, s32
-
+        if self.privileged:
+            out = self._decode(loc, self._local_proto(loc, gt_mask), H, W)
+            if self.training:
+                loc_t, proto_t = self._fuse_semantic(x, loc, gt_mask)
+                out["teacher"] = self._decode(loc_t, proto_t, H, W)
+                out["feat_pairs"] = [(loc[li], loc_t[li]) for li in (1, 2, 3)]
+            return out
         if self.use_vit:
-            sem = self._semantic(x)
-            proto_logits, _ = self.proto_head(sem, gt_mask=gt_mask)
-            w = F.softmax(self.depth_logits, dim=-1)
-            for k, li in enumerate((1, 2, 3)):
-                mixed = sum(w[k, j] * s for j, s in enumerate(sem))
-                loc[li] = self.fuse[k](loc[li], mixed)
+            loc, proto_logits = self._fuse_semantic(x, loc, gt_mask)
         else:
-            s16 = self.sem16(loc[2])
-            s32 = F.interpolate(loc[3], size=s16.shape[-2:], mode="bilinear", align_corners=False)
-            proto_logits, _ = self.proto_head([s16, s16, s32, s16], gt_mask=gt_mask)
+            proto_logits = self._local_proto(loc, gt_mask)
+        return self._decode(loc, proto_logits, H, W)
 
+    def _decode(self, loc, proto_logits, H, W):
         p4, f4, b4 = self.dec4(loc[3], proto=proto_logits)
         p3, f3, b3 = self.dec3(loc[2], p4, f4, b4, proto=proto_logits)
         p2, f2, b2 = self.dec2(loc[1], p3, f3, b3)

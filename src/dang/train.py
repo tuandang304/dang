@@ -182,6 +182,17 @@ def compute_total_loss(outputs: dict, masks: torch.Tensor, cfg, epoch: int = 1) 
         for aux_logit in outputs["aux_logits"]:
             aux_loss = aux_loss + bce_dice_loss(aux_logit, masks, sample_weights=sample_w)
         loss = loss + 0.25 * (aux_loss / len(outputs["aux_logits"]))
+
+    if outputs.get("teacher") is not None:
+        # Privileged semantic stream (DANG v5): supervise the fused teacher path with the same shared loss, and
+        # distil it into the local-only student path (logit KD + cosine feature distillation at s8/s16/s32)
+        teacher = outputs["teacher"]
+        loss = loss + compute_total_loss(teacher, masks, cfg, epoch=epoch)
+        soft = torch.sigmoid(teacher["logits"].detach().float())
+        kd = F.binary_cross_entropy_with_logits(outputs["logits"].float(), soft)
+        pairs = outputs["feat_pairs"]
+        feat = sum(1.0 - F.cosine_similarity(st.float(), tf.detach().float(), dim=1).mean() for st, tf in pairs) / len(pairs)
+        loss = loss + getattr(cfg, "v5_kd_weight", 1.0) * kd + getattr(cfg, "v5_feat_kd_weight", 1.0) * feat
     return loss
 
 
@@ -359,8 +370,12 @@ def measure_efficiency(model: nn.Module, cfg, device: torch.device, amp_dtype: t
     cpu_state = torch.get_rng_state()
     cuda_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
 
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    # Count only parameters the inference path uses (privileged mode drops the training-time teacher stream)
+    deploy = getattr(model, "is_deploy_param", lambda name: True)
+    named = list(model.named_parameters())
+    total_params = sum(p.numel() for n, p in named if deploy(n))
+    trainable_params = sum(p.numel() for n, p in named if p.requires_grad and deploy(n))
+    train_only_params = sum(p.numel() for n, p in named if not deploy(n))
     frozen_params = total_params - trainable_params
 
     model.eval()
@@ -395,6 +410,7 @@ def measure_efficiency(model: nn.Module, cfg, device: torch.device, amp_dtype: t
         "trainable_params_m": round(trainable_params / 1e6, 3),
         "frozen_params_m": round(frozen_params / 1e6, 3),
         "trainable_pct": round(100.0 * trainable_params / max(total_params, 1), 2),
+        "train_time_only_params_m": round(train_only_params / 1e6, 3),
         "fps": round(fps, 2),
         "latency_ms_bs1": round(1000.0 / fps, 2) if fps > 0 else 0.0,
         "peak_mem_mb_bs1": round(peak_mem_mb, 1),
