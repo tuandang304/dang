@@ -545,7 +545,8 @@ def train_and_select_best(
         print(
             f"[{tag} | Ep {epoch:02d}/{epochs:02d}] "
             f"loss={train_loss:.4f} | val_dice={val_dice:.2f}% ({src_tag}) | val_iou={val_iou:.2f}% "
-            f"| lr={cur_new_lr:.2e} | time={ep_time:.1f}s",
+            f"| lr={cur_new_lr:.2e} | time={ep_time:.1f}s"
+            f"{' | vit_fp32_fallbacks=' + str(model.fp32_fallbacks) if hasattr(model, 'fp32_fallbacks') else ''}",
             flush=True,
         )
 
