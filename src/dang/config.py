@@ -4,7 +4,7 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "v9d_convnextt_vits_fp16_seed42"
+    variant_name: str = "d1_deploy_benchmark"
     seed: int = 42
     # External SOTA selector (dang/sota.py) and loss: "shared" = Eq. (9) of the paper, "official" = method's own loss
     arch: str = "dang_v5"
@@ -12,6 +12,7 @@ class ExperimentConfig:
     # Write binary predicted masks for this seed to $ORX_OUTPUT_DIR/pred_masks_seed<N>.zip (None = off)
     dump_pred_seed: int | None = 42
     seeds: tuple[int, ...] = (42,)
+    bench_only: bool = True                             # D1: run dang.bench (no training) and exit
 
     # Stress-test S1 (5% Few-Shot Kvasir = 40 images) + Full 100% (800 images)
     run_s1_10pct: bool = True
@@ -20,6 +21,7 @@ class ExperimentConfig:
 
     # DANG v5 (dang/dang_v5.py)
     v5_local: str = "convnext_tiny.dinov3_lvd1689m"
+    v5_local_out_indices: tuple[int, ...] = ()
     v5_vit: str = "vit_small_patch16_dinov3.lvd1689m"   # "" = no semantic stream
     v5_vit_size: int = 448                              # 28x28 patch grid at patch 16
     v5_vit_layers: tuple[int, ...] = (2, 5, 8, 11)
@@ -70,6 +72,7 @@ class ExperimentConfig:
         d = asdict(self)
         d["seeds"] = list(self.seeds)
         d["v5_vit_layers"] = list(self.v5_vit_layers)
+        d["v5_local_out_indices"] = list(self.v5_local_out_indices)
         return d
 
 

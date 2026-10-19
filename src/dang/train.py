@@ -562,6 +562,10 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
     amp_dtype, use_scaler = get_amp_config(device)
+    if getattr(cfg, "bench_only", False):
+        from dang.bench import run_benchmark  # D1 deployment benchmark: inference only, no data or training
+        run_benchmark(cfg, build_model, device)
+        return
 
     print("=" * 88)
     print(f"DANG-Med v4 Stress-Test & OOD Runner | Variant: {cfg.variant_name}")

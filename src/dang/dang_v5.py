@@ -124,7 +124,9 @@ class DANGv5(nn.Module):
         super().__init__()
         self.cfg = cfg
         dim = cfg.embed_dim
-        self.cnn = timm.create_model(cfg.v5_local, pretrained=True, features_only=True)
+        out_idx = tuple(getattr(cfg, "v5_local_out_indices", ()))  # pick s4..s32 from backbones that also emit s2
+        self.cnn = timm.create_model(cfg.v5_local, pretrained=True, features_only=True,
+                                     **({"out_indices": out_idx} if out_idx else {}))
         self.loc_projs = nn.ModuleList([ConvBNAct(c, dim, kernel_size=1, padding=0) for c in self.cnn.feature_info.channels()])
 
         self.use_vit = bool(cfg.v5_vit)
