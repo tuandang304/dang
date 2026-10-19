@@ -4,14 +4,14 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "v6b_lora12_r16"
+    variant_name: str = "v6b_lora12_r16_seed42"
     seed: int = 42
     # External SOTA selector (dang/sota.py) and loss: "shared" = Eq. (9) of the paper, "official" = method's own loss
     arch: str = "dang_v5"
     loss_mode: str = "shared"
     # Write binary predicted masks for this seed to $ORX_OUTPUT_DIR/pred_masks_seed<N>.zip (None = off)
     dump_pred_seed: int | None = 42
-    seeds: tuple[int, ...] = (42, 43, 44, 45, 46)
+    seeds: tuple[int, ...] = (42,)
 
     # Stress-test S1 (5% Few-Shot Kvasir = 40 images) + Full 100% (800 images)
     run_s1_10pct: bool = True
