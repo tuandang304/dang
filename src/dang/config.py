@@ -25,6 +25,7 @@ class ExperimentConfig:
     v5_vit_layers: tuple[int, ...] = (2, 5, 8, 11)
     v5_lora_blocks: int = 12
     v5_lora_rank: int = 16
+    v5_vit_fp32: bool = True                            # DINOv3 ViT-S block-0 attention logits ~2.2e6 overflow fp16
     bg_loss_weight: float = 0.4
     amp_mix_prob: float = 0.5                           # Fourier amplitude mix (FACT), per image
 
