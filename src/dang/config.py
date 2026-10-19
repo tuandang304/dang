@@ -25,6 +25,7 @@ class ExperimentConfig:
     v5_vit_layers: tuple[int, ...] = (5, 11, 17, 23)
     v5_lora_blocks: int = 4
     v5_lora_rank: int = 8
+    v5_vit_fp32: bool = True                            # fp32 semantic stream (ViT-L overflows in fp16)
     bg_loss_weight: float = 0.4
 
     # Architecture knobs
