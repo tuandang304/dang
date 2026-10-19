@@ -119,6 +119,37 @@ class DualDecoderStage(nn.Module):
         return x, fg, bg
 
 
+class HalfInstanceNorm(nn.Module):
+    """IBN-Net style: instance-normalise the first half of the channels (removes per-image style/colour statistics),
+    keep the rest; applied as a forward hook after an early backbone stage."""
+
+    def __init__(self, ch: int):
+        super().__init__()
+        self.half = ch // 2
+        self.inorm = nn.InstanceNorm2d(self.half, affine=True)
+
+    def forward(self, x):
+        a, b = x[:, : self.half], x[:, self.half:]
+        return torch.cat([self.inorm(a.float()).to(x.dtype), b], dim=1)
+
+
+class PhaseStructureBranch(nn.Module):
+    """Phase-only reconstruction of the stride-4 features (unit amplitude spectrum keeps edges/structure and drops
+    contrast/illumination energy), projected and added through a zero-initialised gate."""
+
+    def __init__(self, dim: int):
+        super().__init__()
+        self.proj = ConvBNAct(dim, dim, kernel_size=3, padding=1)
+        self.gamma = nn.Parameter(torch.zeros(1, dim, 1, 1))
+
+    def forward(self, x):
+        with torch.autocast(device_type="cuda", enabled=False):
+            f = torch.fft.fft2(x.float(), norm="ortho")
+            ph = torch.fft.ifft2(f / (f.abs() + 1e-6), norm="ortho").real
+            ph = (ph - ph.mean(dim=(2, 3), keepdim=True)) / (ph.std(dim=(2, 3), keepdim=True) + 1e-6)
+        return x + self.gamma * self.proj(ph.to(x.dtype))
+
+
 class DANGv5(nn.Module):
     def __init__(self, cfg):
         super().__init__()
@@ -144,6 +175,27 @@ class DANGv5(nn.Module):
             self.fuse = nn.ModuleList([GatedSemanticFusion(dim) for _ in range(3)])
         else:
             self.sem16 = ConvBNAct(dim, dim, kernel_size=3, padding=1)
+
+        # round-1 architecture switches (all off = V8-b)
+        self.fuse_s4 = bool(getattr(cfg, "v5_fuse_s4", False)) and self.use_vit
+        if self.fuse_s4:
+            self.depth_logits_s4 = nn.Parameter(torch.zeros(1, len(self.vit_layers)))
+            self.fuse4 = GatedSemanticFusion(dim)
+        self.ibn = None
+        if getattr(cfg, "v5_ibn", False):
+            chs = self.cnn.feature_info.channels()
+            self.ibn = nn.ModuleList([HalfInstanceNorm(chs[0]), HalfInstanceNorm(chs[1])])
+            self.cnn.stages_0.register_forward_hook(lambda m, i, o: self.ibn[0](o))
+            self.cnn.stages_1.register_forward_hook(lambda m, i, o: self.ibn[1](o))
+        self.phase = PhaseStructureBranch(dim) if getattr(cfg, "v5_phase", False) else None
+        self.detail = None
+        if getattr(cfg, "v5_detail_s2", False):
+            self.detail = nn.Sequential(nn.Conv2d(3, 32, 3, stride=2, padding=1, bias=False), nn.BatchNorm2d(32), nn.GELU(),
+                                        ConvBNAct(32, 32, kernel_size=3, padding=1))
+            self.detail_ctx = ConvBNAct(dim, 32, kernel_size=1, padding=0)
+            self.detail_head = nn.Sequential(ConvBNAct(65, 32, kernel_size=3, padding=1), nn.Conv2d(32, 1, 1))
+            nn.init.zeros_(self.detail_head[1].weight)
+            nn.init.zeros_(self.detail_head[1].bias)
 
         self.proto_head = DualPrototypeMarginHead(dim=dim, proto_dim=cfg.proto_dim, num_prototypes=cfg.num_prototypes)
 
@@ -189,10 +241,16 @@ class DANGv5(nn.Module):
             for k, li in enumerate((1, 2, 3)):
                 mixed = sum(w[k, j] * s for j, s in enumerate(sem))
                 loc[li] = self.fuse[k](loc[li], mixed)
+            if self.fuse_s4:
+                w4 = F.softmax(self.depth_logits_s4, dim=-1)
+                loc[0] = self.fuse4(loc[0], sum(w4[0, j] * s for j, s in enumerate(sem)))
         else:
             s16 = self.sem16(loc[2])
             s32 = F.interpolate(loc[3], size=s16.shape[-2:], mode="bilinear", align_corners=False)
             proto_logits, _ = self.proto_head([s16, s16, s32, s16], gt_mask=gt_mask)
+
+        if self.phase is not None:
+            loc[0] = self.phase(loc[0])
 
         p4, f4, b4 = self.dec4(loc[3], proto=proto_logits)
         p3, f3, b3 = self.dec3(loc[2], p4, f4, b4, proto=proto_logits)
@@ -207,6 +265,12 @@ class DANGv5(nn.Module):
         z = self._passe(z, f4 - b4, proto_logits)
 
         up = lambda t: F.interpolate(t.float(), size=(H, W), mode="bilinear", align_corners=False)
+        if self.detail is not None:
+            d = self.detail(x)
+            size2 = d.shape[-2:]
+            ctx = F.interpolate(self.detail_ctx(p1), size=size2, mode="bilinear", align_corners=False)
+            z2 = F.interpolate(z, size=size2, mode="bilinear", align_corners=False)
+            z = z2 + self.detail_head(torch.cat([d, ctx.to(d.dtype), z2.to(d.dtype)], dim=1)).float()
         return {
             "logits": up(z),
             "aux_logits": [up(0.5 * (f2 - b2)), up(0.5 * (f3 - b3)), up(0.5 * (f4 - b4))],
