@@ -138,6 +138,7 @@ class DANGv5(nn.Module):
             for i in range(nb - cfg.v5_lora_blocks, nb):
                 self.vit.blocks[i] = EvaConvLoRA(self.vit.blocks[i], vd, cfg.v5_lora_rank, npre)
             self.vit_layers = list(cfg.v5_vit_layers)
+            self.fp32_fallbacks = 0
             self.sem_projs = nn.ModuleList([ConvBNAct(vd, dim, kernel_size=1, padding=0) for _ in self.vit_layers])
             # learned depth mixing: one semantic map per fused scale (s8, s16, s32) from all readout depths
             self.depth_logits = nn.Parameter(torch.zeros(3, len(self.vit_layers)))
@@ -164,6 +165,13 @@ class DANGv5(nn.Module):
         else:
             feats = self.vit.forward_intermediates(xv, indices=self.vit_layers, norm=True, output_fmt="NCHW",
                                                    intermediates_only=True)
+            if getattr(self.cfg, "v5_vit_fp32_fallback", False) and xv.is_cuda and \
+                    not all(torch.isfinite(f).all() for f in feats):
+                # fp16 overflow guard: recompute this batch's semantic stream in fp32 and count it
+                self.fp32_fallbacks += 1
+                with torch.autocast(device_type="cuda", enabled=False):
+                    feats = self.vit.forward_intermediates(xv.float(), indices=self.vit_layers, norm=True,
+                                                           output_fmt="NCHW", intermediates_only=True)
         return [proj(f) for proj, f in zip(self.sem_projs, feats)]
 
     @staticmethod
