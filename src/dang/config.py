@@ -4,7 +4,7 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "v8b_convnextt_vits_ampmix_seed42"
+    variant_name: str = "v9d_convnextt_vits_fp16_seed42"
     seed: int = 42
     # External SOTA selector (dang/sota.py) and loss: "shared" = Eq. (9) of the paper, "official" = method's own loss
     arch: str = "dang_v5"
@@ -25,7 +25,8 @@ class ExperimentConfig:
     v5_vit_layers: tuple[int, ...] = (2, 5, 8, 11)
     v5_lora_blocks: int = 12
     v5_lora_rank: int = 16
-    v5_vit_fp32: bool = True                            # DINOv3 ViT-S block-0 attention logits ~2.2e6 overflow fp16
+    v5_vit_fp32_fallback: bool = True                   # fp16 semantic stream; fp32 recompute only on non-finite output
+    v5_vit_fp32: bool = False                           # V8-b used True (CPU probe: block-0 logits ~2.2e6)
     bg_loss_weight: float = 0.4
     amp_mix_prob: float = 0.5                           # Fourier amplitude mix (FACT), per image
 
