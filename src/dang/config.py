@@ -4,11 +4,11 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "r11g_pranet_v2_5seed"
+    variant_name: str = "v5a_dinov3_convnext_s_vitb"
     seed: int = 42
     # External SOTA selector (dang/sota.py) and loss: "shared" = Eq. (9) of the paper, "official" = method's own loss
-    arch: str = "pranet_v2"
-    loss_mode: str = "official"
+    arch: str = "dang_v5"
+    loss_mode: str = "shared"
     # Write binary predicted masks for this seed to $ORX_OUTPUT_DIR/pred_masks_seed<N>.zip (None = off)
     dump_pred_seed: int | None = 42
     seeds: tuple[int, ...] = (42, 43, 44, 45, 46)
@@ -17,6 +17,15 @@ class ExperimentConfig:
     run_s1_10pct: bool = True
     s1_epochs: int = 40
     s1_warmup_epochs: int = 3
+
+    # DANG v5 (dang/dang_v5.py)
+    v5_local: str = "convnext_small.dinov3_lvd1689m"
+    v5_vit: str = "vit_base_patch16_dinov3.lvd1689m"   # "" = no semantic stream
+    v5_vit_size: int = 448                              # 28x28 patch grid at patch 16
+    v5_vit_layers: tuple[int, ...] = (2, 5, 8, 11)
+    v5_lora_blocks: int = 4
+    v5_lora_rank: int = 8
+    bg_loss_weight: float = 0.4
 
     # Architecture knobs
     cnn_backbone: str = "convnext_tiny.fb_in22k_ft_in1k_384"
@@ -47,7 +56,7 @@ class ExperimentConfig:
     vit_img_size: int = 350          # 25x25 patches for patch_size=14
     batch_size: int = 16
     epochs: int = 20
-    cnn_lr: float = 1.6e-4
+    cnn_lr: float = 1.2e-4
     lr: float = 4.0e-4
     peft_lr: float = 1.0e-3
     weight_decay: float = 1e-4
@@ -57,6 +66,7 @@ class ExperimentConfig:
     def to_dict(self):
         d = asdict(self)
         d["seeds"] = list(self.seeds)
+        d["v5_vit_layers"] = list(self.v5_vit_layers)
         return d
 
 

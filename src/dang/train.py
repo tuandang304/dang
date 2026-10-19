@@ -23,6 +23,7 @@ from dang.data import prepare_all_cohorts, build_dataloaders_for_seed, decode_bi
 from dang.metrics import compute_sample_metrics, aggregate_metrics, compute_binary_dice
 from dang.model import DANGModel
 from dang.sota import SOTA_MODELS
+from dang.dang_v5 import DANGv5
 
 
 def build_model(cfg) -> nn.Module:
@@ -30,6 +31,8 @@ def build_model(cfg) -> nn.Module:
     arch = getattr(cfg, "arch", "dang")
     if arch in SOTA_MODELS:
         return SOTA_MODELS[arch](cfg)
+    if arch == "dang_v5":
+        return DANGv5(cfg)
     return DANGModel(cfg)
 
 
@@ -151,6 +154,12 @@ def compute_total_loss(outputs: dict, masks: torch.Tensor, cfg, epoch: int = 1) 
         edge_loss = bce_dice_loss(outputs["boundary_logits"], edge_gt)
         ramp = min(1.0, max(0.1, (epoch - 1) / 5.0))
         loss = loss + cfg.boundary_loss_weight * ramp * edge_loss
+
+    if outputs.get("bg_logits") is not None:
+        # DANG v5: explicit background supervision of every decoder stage (target = 1 - mask)
+        bg_gt = 1.0 - masks.float()
+        bg_loss = sum(bce_dice_loss(b, bg_gt) for b in outputs["bg_logits"]) / len(outputs["bg_logits"])
+        loss = loss + getattr(cfg, "bg_loss_weight", 0.4) * bg_loss
 
     if cfg.deep_supervision:
         aux_loss = 0.0
@@ -442,7 +451,7 @@ def train_and_select_best(
     for epoch in range(1, epochs + 1):
         ep_t0 = time.time()
         model.train()
-        if cfg.use_dinov2:
+        if cfg.use_dinov2 or getattr(model, "use_vit", False):
             model.vit.eval()
             for m in model.vit.modules():
                 if hasattr(m, "down") and hasattr(m, "up"):
