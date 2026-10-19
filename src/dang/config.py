@@ -4,7 +4,7 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "sb2b_polyp_pvt_official_s45_46"
+    variant_name: str = "sb2a_polyp_pvt_official_amp_s42_43"
     seed: int = 42
     # External SOTA selector (dang/sota.py) and loss: "shared" = Eq. (9) of the paper, "official" = method's own loss
     arch: str = "dang_v5"
@@ -16,11 +16,12 @@ class ExperimentConfig:
     # SOTA benchmark (dang/bench): "dang" = Kvasir stress protocol above; "bench" = PraNet split + PolypGen + PolypDB
     protocol: str = "bench"
     bench_model: str = "polyp_pvt"                     # "" = data audit only | "pranet" | "polyp_pvt" | "pranet_v2" | "dang"
-    bench_seeds: tuple[int, ...] = (45, 46)
+    bench_seeds: tuple[int, ...] = (42, 43)
     bench_polypdb: bool = True                # PolypDB is a final-test cohort: off for DANG screening runs
     bench_dump_seed: int | None = None          # binary 352x352 prediction masks for this seed (paper figures)
     bench_dang_epochs: int = 20
     bench_num_workers: int = 2
+    bench_official_amp: bool = True           # fp16 autocast for the official loop (fp32 does not fit Kaggle for Polyp-PVT)
 
     # Stress-test S1 (5% Few-Shot Kvasir = 40 images) + Full 100% (800 images)
     run_s1_10pct: bool = True

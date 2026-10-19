@@ -216,15 +216,18 @@ class OfficialTrainDataset(torch.utils.data.Dataset):
         return self.img_transform(image), self.gt_transform(gt)
 
 
-def train_official(recipe: Recipe, model, train_samples, device, log, num_workers: int = 2):
+def train_official(recipe: Recipe, model, train_samples, device, log, num_workers: int = 2, amp: bool = False):
     """One seed of the official loop: for epoch in range(1, epoch_arg): adjust_lr; for each batch and scale: step."""
     ds = OfficialTrainDataset(train_samples, recipe.trainsize)
     loader = torch.utils.data.DataLoader(ds, batch_size=recipe.batch_size, shuffle=True,
                                          num_workers=num_workers, pin_memory=True)
     optimizer = make_optimizer(recipe, model)
+    # amp=True: fp16 autocast + GradScaler (gradients unscaled before the official value clipping). The only change
+    # to the official loop; used when the fp32 recipe does not fit the compute (Polyp-PVT: ~14 h/seed on a T4).
+    scaler = torch.amp.GradScaler("cuda", enabled=amp)
     log(f"official recipe {recipe.name}: optimizer={optimizer.__class__.__name__} lr={recipe.lr} "
         f"wd={recipe.weight_decay} epochs={recipe.epoch_arg - 1} batch={recipe.batch_size} clip={recipe.clip} "
-        f"adjust_lr({recipe.decay_rate}, {recipe.decay_epoch}) scales={recipe.size_rates} "
+        f"adjust_lr({recipe.decay_rate}, {recipe.decay_epoch}) scales={recipe.size_rates} precision={'fp16-AMP' if amp else 'fp32'} "
         f"train_images={len(ds)} (size-mismatch dropped={ds.dropped}) steps/epoch={len(loader)}x{len(recipe.size_rates)}")
     import time
     for epoch in range(1, recipe.epoch_arg):
@@ -241,11 +244,14 @@ def train_official(recipe: Recipe, model, train_samples, device, log, num_worker
                 if rate != 1:
                     images = F.interpolate(images, size=(trainsize, trainsize), mode='bilinear', align_corners=True)
                     gts = F.interpolate(gts, size=(trainsize, trainsize), mode='bilinear', align_corners=True)
-                outputs = model(images)
-                loss = recipe.loss(outputs, gts)
-                loss.backward()
+                with torch.amp.autocast(device_type="cuda", dtype=torch.float16, enabled=amp):
+                    outputs = model(images)
+                    loss = recipe.loss(outputs, gts)
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
                 clip_gradient(optimizer, recipe.clip)
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
                 if rate == 1:
                     tot += float(loss.item())
                     n += 1
