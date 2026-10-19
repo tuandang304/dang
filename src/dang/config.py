@@ -4,14 +4,14 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "v6c_ampmix"
+    variant_name: str = "v7b_vitb_ampmix_lora12_seed42"
     seed: int = 42
     # External SOTA selector (dang/sota.py) and loss: "shared" = Eq. (9) of the paper, "official" = method's own loss
     arch: str = "dang_v5"
     loss_mode: str = "shared"
     # Write binary predicted masks for this seed to $ORX_OUTPUT_DIR/pred_masks_seed<N>.zip (None = off)
     dump_pred_seed: int | None = 42
-    seeds: tuple[int, ...] = (42, 43, 44, 45, 46)
+    seeds: tuple[int, ...] = (42,)
 
     # Stress-test S1 (5% Few-Shot Kvasir = 40 images) + Full 100% (800 images)
     run_s1_10pct: bool = True
@@ -23,8 +23,8 @@ class ExperimentConfig:
     v5_vit: str = "vit_base_patch16_dinov3.lvd1689m"   # "" = no semantic stream
     v5_vit_size: int = 448                              # 28x28 patch grid at patch 16
     v5_vit_layers: tuple[int, ...] = (2, 5, 8, 11)
-    v5_lora_blocks: int = 4
-    v5_lora_rank: int = 8
+    v5_lora_blocks: int = 12
+    v5_lora_rank: int = 16
     bg_loss_weight: float = 0.4
     amp_mix_prob: float = 0.5                           # Fourier amplitude mix (FACT), per image
 
