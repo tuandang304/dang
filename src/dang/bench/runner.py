@@ -68,7 +68,8 @@ def run_one_seed(cfg, seed: int, data: dict, gpu_tag: str) -> dict:
     if cfg.bench_model in RECIPES:
         recipe = RECIPES[cfg.bench_model]
         model = recipe.build().to(device)
-        model = train_official(recipe, model, data["train"], device, log, num_workers=nw)
+        model = train_official(recipe, model, data["train"], device, log, num_workers=nw,
+                               amp=bool(getattr(cfg, "bench_official_amp", False)))
         logits_fn, amp_dtype = recipe.test_logits, None                     # official code runs fp32
     elif cfg.bench_model == "dang":
         from torch.utils.data import DataLoader
