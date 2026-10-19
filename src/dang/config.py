@@ -4,7 +4,7 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "v8b_convnextt_vits_ampmix_seed42"
+    variant_name: str = "v9b_mnv4m_vits_ampmix_seed42"
     seed: int = 42
     # External SOTA selector (dang/sota.py) and loss: "shared" = Eq. (9) of the paper, "official" = method's own loss
     arch: str = "dang_v5"
@@ -19,7 +19,8 @@ class ExperimentConfig:
     s1_warmup_epochs: int = 3
 
     # DANG v5 (dang/dang_v5.py)
-    v5_local: str = "convnext_tiny.dinov3_lvd1689m"
+    v5_local: str = "mobilenetv4_conv_medium.e500_r256_in1k"
+    v5_local_out_indices: tuple[int, ...] = (1, 2, 3, 4)          # s4, s8, s16, s32
     v5_vit: str = "vit_small_patch16_dinov3.lvd1689m"   # "" = no semantic stream
     v5_vit_size: int = 448                              # 28x28 patch grid at patch 16
     v5_vit_layers: tuple[int, ...] = (2, 5, 8, 11)
@@ -69,6 +70,7 @@ class ExperimentConfig:
         d = asdict(self)
         d["seeds"] = list(self.seeds)
         d["v5_vit_layers"] = list(self.v5_vit_layers)
+        d["v5_local_out_indices"] = list(self.v5_local_out_indices)
         return d
 
 
