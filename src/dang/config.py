@@ -4,10 +4,10 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "r11c_emcad_5seed"
+    variant_name: str = "r11g_pranet_v2_5seed"
     seed: int = 42
     # External SOTA selector (dang/sota.py) and loss: "shared" = Eq. (9) of the paper, "official" = method's own loss
-    arch: str = "emcad"
+    arch: str = "pranet_v2"
     loss_mode: str = "official"
     # Write binary predicted masks for this seed to $ORX_OUTPUT_DIR/pred_masks_seed<N>.zip (None = off)
     dump_pred_seed: int | None = 42

@@ -13,6 +13,10 @@ ImageNet weights come from timm instead of the authors' local .pth files.
   EMCAD     (Rahman et al., CVPR 2024) github.com/SLDGroup/EMCAD          lib/networks.py
             PVTv2-B2 -> timm pvt_v2_b2.in1k, decoder vendored verbatim (third_party/emcad_decoders.py)
             loss: structure on p4,p3,p2,p1 and on their sum; inference: p1 (= P[-1])
+  PraNet-V2 (Hu et al., 2025)        github.com/ai4colonoscopy/PraNet-V2 binary_seg/lib/pranet.py
+            PVT_PraNet_V2(num_class=1, use_softmax=True), PVTv2-B2 -> timm pvt_v2_b2.in1k
+            loss: sum over lateral maps 2-5 of structure loss + 0.8 * weighted BCE on the background
+            maps (background mask = 1 - gt); inference: sum of the four foreground lateral maps
 
 The backbone is stored as `self.cnn` so the shared optimizer gives it the backbone learning rate.
 """
@@ -337,4 +341,123 @@ class EMCADModel(nn.Module):
         return sum(structure_loss(q, masks) for q in p) + structure_loss(p[0] + p[1] + p[2] + p[3], masks)
 
 
-SOTA_MODELS = {"pranet": PraNetModel, "polyp_pvt": PolypPVTModel, "emcad": EMCADModel}
+# ------------------------------------------------------------------------------------------------
+# PraNet-V2 (PVTv2-B2 variant, the stronger of the two official backbones)
+# ------------------------------------------------------------------------------------------------
+def structure_loss_v2(pred, pred_bg, mask):
+    """Official PraNet-V2 loss: structure loss on the foreground plus 0.8 x weighted BCE on the background."""
+    pred = pred.float()
+    pred_bg = pred_bg.float()
+    mask = mask.float()
+    mask_bg = 1 - mask
+    weit = 1 + 5 * torch.abs(F.avg_pool2d(mask, kernel_size=31, stride=1, padding=15) - mask)
+    wbce = F.binary_cross_entropy_with_logits(pred, mask, reduction="none")
+    wbce = (weit * wbce).sum(dim=(2, 3)) / weit.sum(dim=(2, 3))
+    wbce2 = F.binary_cross_entropy_with_logits(pred_bg, mask_bg, reduction="none")
+    wbce2 = (weit * wbce2).sum(dim=(2, 3)) / weit.sum(dim=(2, 3))
+    prob = torch.sigmoid(pred)
+    inter = ((prob * mask) * weit).sum(dim=(2, 3))
+    union = ((prob + mask) * weit).sum(dim=(2, 3))
+    wiou = 1 - (inter + 1) / (union - inter + 1)
+    return (wbce + wiou + 0.8 * wbce2).mean()
+
+
+class PraNetV2Aggregation(PraNetAggregation):
+    # Official partial decoder with separate foreground and background heads (conv5_fg / conv5_bg).
+    def __init__(self, channel, num_class=1):
+        super().__init__(channel)
+        del self.conv5
+        self.conv5_fg = nn.Conv2d(3 * channel, num_class, 1)
+        self.conv5_bg = nn.Conv2d(3 * channel, num_class, 1)
+
+    def forward(self, x1, x2, x3):
+        x2_1 = self.conv_upsample1(self.upsample(x1)) * x2
+        x3_1 = self.conv_upsample2(self.upsample(self.upsample(x1))) * self.conv_upsample3(self.upsample(x2)) * x3
+        x2_2 = self.conv_concat2(torch.cat((x2_1, self.conv_upsample4(self.upsample(x1))), 1))
+        x3_2 = self.conv_concat3(torch.cat((x3_1, self.conv_upsample5(self.upsample(x2_2))), 1))
+        x = self.conv4(x3_2)
+        return self.conv5_fg(x), self.conv5_bg(x)
+
+
+class PraNetV2Model(nn.Module):
+    def __init__(self, cfg, channel: int = 32, num_class: int = 1):
+        super().__init__()
+        self.cfg = cfg
+        self.cnn = timm.create_model(getattr(cfg, "sota_backbone", "pvt_v2_b2.in1k"), pretrained=True,
+                                     features_only=True)  # [64, 128, 320, 512]
+        self.rfb2_1 = RFB_modified(128, channel)
+        self.rfb3_1 = RFB_modified(320, channel)
+        self.rfb4_1 = RFB_modified(512, channel)
+        self.agg1 = PraNetV2Aggregation(channel, num_class)
+        # DSRA3
+        self.ra4_conv1 = BasicConv2d(512, 256, kernel_size=1)
+        self.ra4_conv2 = BasicConv2d(256, 256, kernel_size=5, padding=2)
+        self.ra4_conv3 = BasicConv2d(256, 256, kernel_size=5, padding=2)
+        self.ra4_conv4 = BasicConv2d(256, 256, kernel_size=5, padding=2)
+        self.ra4_conv5_fg = BasicConv2d(256, num_class, kernel_size=1)
+        self.ra4_conv5_bg = BasicConv2d(256, num_class, kernel_size=1)
+        # DSRA2
+        self.ra3_conv1 = BasicConv2d(320, 64, kernel_size=1)
+        self.ra3_conv2 = BasicConv2d(64, 64, kernel_size=3, padding=1)
+        self.ra3_conv3 = BasicConv2d(64, 64, kernel_size=3, padding=1)
+        self.ra3_conv4_fg = BasicConv2d(64, num_class, kernel_size=3, padding=1)
+        self.ra3_conv4_bg = BasicConv2d(64, num_class, kernel_size=3, padding=1)
+        # DSRA1
+        self.ra2_conv1 = BasicConv2d(128, 64, kernel_size=1)
+        self.ra2_conv2 = BasicConv2d(64, 64, kernel_size=3, padding=1)
+        self.ra2_conv3 = BasicConv2d(64, 64, kernel_size=3, padding=1)
+        self.ra2_conv4_fg = BasicConv2d(64, num_class, kernel_size=3, padding=1)
+        self.ra2_conv4_bg = BasicConv2d(64, num_class, kernel_size=3, padding=1)
+
+    @staticmethod
+    def _dsra(feat_fg, crop_fg, crop_bg):
+        # Official use_softmax=True path; with num_class=1 the channel softmax is identically 1.
+        return feat_fg + feat_fg.mul(F.softmax(crop_fg - crop_bg, dim=1))
+
+    def forward(self, x, gt_mask=None):
+        _, x2, x3, x4 = self.cnn(x)
+        ra5_fg, ra5_bg = self.agg1(self.rfb4_1(x4), self.rfb3_1(x3), self.rfb2_1(x2))
+        lm5_fg = F.interpolate(ra5_fg, scale_factor=8, mode="bilinear")
+        lm5_bg = F.interpolate(ra5_bg, scale_factor=8, mode="bilinear")
+
+        crop_fg = F.interpolate(ra5_fg, scale_factor=0.25, mode="bilinear")
+        crop_bg = F.interpolate(ra5_bg, scale_factor=0.25, mode="bilinear")
+        h = self.ra4_conv1(x4)
+        h = F.relu(self.ra4_conv2(h))
+        h = F.relu(self.ra4_conv3(h))
+        h = F.relu(self.ra4_conv4(h))
+        ra4_fg = self._dsra(self.ra4_conv5_fg(h), crop_fg, crop_bg)
+        ra4_bg = self.ra4_conv5_bg(h)
+        lm4_fg = F.interpolate(ra4_fg, scale_factor=32, mode="bilinear")
+        lm4_bg = F.interpolate(ra4_bg, scale_factor=32, mode="bilinear")
+
+        crop_fg = F.interpolate(ra4_fg, scale_factor=2, mode="bilinear")
+        crop_bg = F.interpolate(ra4_bg, scale_factor=2, mode="bilinear")
+        h = self.ra3_conv1(x3)
+        h = F.relu(self.ra3_conv2(h))
+        h = F.relu(self.ra3_conv3(h))
+        ra3_fg = self._dsra(self.ra3_conv4_fg(h), crop_fg, crop_bg)
+        ra3_bg = self.ra3_conv4_bg(h)
+        lm3_fg = F.interpolate(ra3_fg, scale_factor=16, mode="bilinear")
+        lm3_bg = F.interpolate(ra3_bg, scale_factor=16, mode="bilinear")
+
+        crop_fg = F.interpolate(ra3_fg, scale_factor=2, mode="bilinear")
+        crop_bg = F.interpolate(ra3_bg, scale_factor=2, mode="bilinear")
+        h = self.ra2_conv1(x2)
+        h = F.relu(self.ra2_conv2(h))
+        h = F.relu(self.ra2_conv3(h))
+        ra2_fg = self._dsra(self.ra2_conv4_fg(h), crop_fg, crop_bg)
+        ra2_bg = self.ra2_conv4_bg(h)
+        lm2_fg = F.interpolate(ra2_fg, scale_factor=8, mode="bilinear")
+        lm2_bg = F.interpolate(ra2_bg, scale_factor=8, mode="bilinear")
+
+        fg = [lm2_fg, lm3_fg, lm4_fg, lm5_fg]
+        bg = [lm2_bg, lm3_bg, lm4_bg, lm5_bg]
+        return {"logits": lm2_fg + lm3_fg + lm4_fg + lm5_fg, "side_outputs": fg, "bg_outputs": bg}
+
+    @staticmethod
+    def official_loss(outputs, masks):
+        return sum(structure_loss_v2(f, b, masks) for f, b in zip(outputs["side_outputs"], outputs["bg_outputs"]))
+
+
+SOTA_MODELS = {"pranet": PraNetModel, "polyp_pvt": PolypPVTModel, "emcad": EMCADModel, "pranet_v2": PraNetV2Model}
