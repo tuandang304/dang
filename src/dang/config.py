@@ -4,7 +4,7 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "a1_r2b_no_proto_5seed"
+    variant_name: str = "a3_r2b_no_proto_no_lora_5seed"
     seed: int = 42
     # External SOTA selector (dang/sota.py) and loss: "shared" = Eq. (9) of the paper, "official" = method's own loss
     arch: str = "dang_v5"
@@ -32,7 +32,7 @@ class ExperimentConfig:
     v5_vit: str = "vit_small_patch16_dinov3.lvd1689m"   # "" = no semantic stream
     v5_vit_size: int = 448                              # 28x28 patch grid at patch 16
     v5_vit_layers: tuple[int, ...] = (2, 5, 8, 11)
-    v5_lora_blocks: int = 12
+    v5_lora_blocks: int = 0                             # ablation A3: fully frozen encoder (with v12_proto=False)
     v5_lora_rank: int = 16
     v5_vit_fp32: bool = True                            # DINOv3 ViT-S block-0 attention logits ~2.2e6 overflow fp16
     bg_loss_weight: float = 0.4
