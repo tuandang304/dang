@@ -5,6 +5,7 @@ from dataclasses import dataclass, asdict
 class ExperimentConfig:
     # Experiment identification
     variant_name: str = "v12l2_deploy_bench_t4_graphs"
+    variant_name: str = "v5b_dinov3_convnext_s_vitl"
     seed: int = 42
     # External SOTA selector (dang/sota.py) and loss: "shared" = Eq. (9) of the paper, "official" = method's own loss
     arch: str = "dang_v5"
@@ -35,6 +36,13 @@ class ExperimentConfig:
     v5_lora_blocks: int = 12
     v5_lora_rank: int = 16
     v5_vit_fp32: bool = True                            # DINOv3 ViT-S block-0 attention logits ~2.2e6 overflow fp16
+    v5_local: str = "convnext_small.dinov3_lvd1689m"
+    v5_vit: str = "vit_large_patch16_dinov3.lvd1689m"   # "" = no semantic stream
+    v5_vit_size: int = 448                              # 28x28 patch grid at patch 16
+    v5_vit_layers: tuple[int, ...] = (5, 11, 17, 23)
+    v5_lora_blocks: int = 4
+    v5_lora_rank: int = 8
+    v5_vit_fp32: bool = True                            # fp32 semantic stream (ViT-L overflows in fp16)
     bg_loss_weight: float = 0.4
     amp_mix_prob: float = 0.5                           # Fourier amplitude mix (FACT), per image
     v5_detail_s2: bool = False                          # round-1: stride-2 detail branch (tiny polyps)
