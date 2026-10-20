@@ -83,16 +83,13 @@ def bench_one(name, overrides, base_cfg, build_model, device):
     rec = {"model": name, "params_m": round(params, 2)}
     model = model.to(device)
     x1 = torch.randn(1, 3, s, s, device=device)
-    fast = torch.backends.mha.get_fastpath_enabled()
-    torch.backends.mha.set_fastpath_enabled(False)   # the fused MHA fast path breaks FlopCounterMode (query decoder)
+    model.requires_grad_(False)   # inference only; trainable leaf inputs (learned queries) break FlopCounterMode's hooks
     try:
         with FlopCounterMode(display=False) as fc:
             model(x1)
         rec["gmacs_bs1"] = round(fc.get_total_flops() / 2e9, 2)
     except Exception as e:  # keep timing even when FLOPs cannot be counted
         rec["gmacs_bs1"], rec["flop_error"] = None, repr(e)[:200]
-    finally:
-        torch.backends.mha.set_fastpath_enabled(fast)
 
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats(device)
