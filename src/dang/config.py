@@ -4,7 +4,7 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "sb0_bench_data_audit"
+    variant_name: str = "sb3c_pranet_v2_official_s46"
     seed: int = 42
     # External SOTA selector (dang/sota.py) and loss: "shared" = Eq. (9) of the paper, "official" = method's own loss
     arch: str = "dang_v5"
@@ -15,10 +15,10 @@ class ExperimentConfig:
 
     # SOTA benchmark (dang/bench): "dang" = Kvasir stress protocol above; "bench" = PraNet split + PolypGen + PolypDB
     protocol: str = "bench"
-    bench_model: str = ""                     # "" = data audit only | "pranet" | "polyp_pvt" | "pranet_v2" | "dang"
-    bench_seeds: tuple[int, ...] = (42, 43, 44, 45, 46)
+    bench_model: str = "pranet_v2"                     # "" = data audit only | "pranet" | "polyp_pvt" | "pranet_v2" | "dang"
+    bench_seeds: tuple[int, ...] = (46,)
     bench_polypdb: bool = True                # PolypDB is a final-test cohort: off for DANG screening runs
-    bench_dump_seed: int | None = 42          # binary 352x352 prediction masks for this seed (paper figures)
+    bench_dump_seed: int | None = None          # binary 352x352 prediction masks for this seed (paper figures)
     bench_dang_epochs: int = 20
     bench_num_workers: int = 2
 
