@@ -4,10 +4,14 @@ Sources (commits in dang/bench/official/PROVENANCE.md):
   PraNet     MyTrain.py        Adam 1e-4, --epoch 20 (loop range(1, 20) = 19 epochs), batch 16, clip 0.5
   Polyp-PVT  Train.py          AdamW 1e-4 / wd 1e-4, --epoch 100 (99 epochs), batch 16, clip 0.5, adjust_lr(.., 0.1, 200)
   PraNet-V2  MyTrain_med.py    PVT-PraNet-V2, Adam 1e-4, --epoch 30 (29 epochs), batch 8, clip 0.5
-All three: 352x352 Resize-only data pipeline (no augmentation), multi-scale {0.75, 1, 1.25} with one optimiser step
+  ASGNet     Train_PS_R_PVTV3_edge1_new1.py + utils/data_val.py (own loop, `train_asgnet` below): PVTv2-B3, channels 96,
+             Adam 1e-4, batch 40, clip 0.5, adjust_lr(.., 0.1, 80) followed by CosineAnnealingLR(T_max=20).step() each
+             epoch, single scale, flip/crop/rotate/colour/pepper augmentation, edge maps from utils/edge_util.py,
+             structure + dice-edge + UAL losses. --epoch 120 (119 epochs): the paper's 120 epochs, not the script's 80.
+PraNet / Polyp-PVT / PraNet-V2: 352x352 Resize-only data pipeline (no augmentation), multi-scale {0.75, 1, 1.25} with one optimiser step
 per scale, fp32, and the authors' structure losses copied verbatim (including PraNet's legacy `reduce='none'`).
 Deliberate deviations, identical for every model: the final-epoch weights are evaluated (Polyp-PVT and PraNet-V2
-keep the best checkpoint on test data); PraNet-V2's `cudnn.enabled = False` speed setting is not applied.
+keep the best checkpoint on test data, ASGNet the lowest-MAE one on its test root); PraNet-V2's `cudnn.enabled = False` speed setting is not applied.
 """
 
 import contextlib
@@ -17,13 +21,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+import io
+import random
+
+import numpy as np
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as transforms
-from PIL import Image
-import io
+from PIL import Image, ImageEnhance
 
 PVT_V2_B2_URL = "https://github.com/whai362/PVT/releases/download/v2/pvt_v2_b2.pth"
+PVT_V2_B3_URL = "https://github.com/whai362/PVT/releases/download/v2/pvt_v2_b3.pth"
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -111,24 +119,25 @@ def adjust_lr(optimizer, init_lr, epoch, decay_rate=0.1, decay_epoch=30):
 # ---------------------------------------------------------------------------------------------------------------------
 # Model construction with the ImageNet weights the official constructors expect
 # ---------------------------------------------------------------------------------------------------------------------
-def _pvt_weights() -> str:
+def _pvt_weights(url: str = PVT_V2_B2_URL) -> str:
     cache = Path(os.environ.get("TORCH_HOME", Path.home() / ".cache" / "torch")) / "bench_weights"
     cache.mkdir(parents=True, exist_ok=True)
-    dst = cache / "pvt_v2_b2.pth"
+    dst = cache / url.rsplit("/", 1)[-1]
     if not dst.exists():
-        torch.hub.download_url_to_file(PVT_V2_B2_URL, str(dst), progress=False)
+        torch.hub.download_url_to_file(url, str(dst), progress=False)
     return str(dst)
 
 
 @contextlib.contextmanager
-def _official_cwd():
-    """Run an official constructor from a directory holding ./pretrained_pth/ and ./models/ (its relative paths)."""
-    src = _pvt_weights()
+def _official_cwd(url: str = PVT_V2_B2_URL, subdirs: tuple = ("pretrained_pth", "models")):
+    """Run an official constructor from a directory holding the weights at its relative paths (./pretrained_pth/,
+    ./models/ for Polyp-PVT and PraNet-V2; ./ for ASGNet)."""
+    src = _pvt_weights(url)
     old = os.getcwd()
     with tempfile.TemporaryDirectory() as tmp:
-        for sub in ("pretrained_pth", "models"):
-            os.makedirs(os.path.join(tmp, sub))
-            os.symlink(src, os.path.join(tmp, sub, "pvt_v2_b2.pth"))
+        for sub in subdirs:
+            os.makedirs(os.path.join(tmp, sub), exist_ok=True)
+            os.symlink(src, os.path.join(tmp, sub, os.path.basename(src)))
         os.chdir(tmp)
         try:
             yield
@@ -170,6 +179,269 @@ class Recipe:
     test_logits: Callable
     size_rates: tuple = (0.75, 1, 1.25)
     trainsize: int = 352
+    train: Callable | None = None   # own training loop; None = train_official
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# ASGNet (github.com/CSYSI/ASGNet @97c4e746, ASGNet_26_TCSVT/): Train_PS_R_PVTV3_edge1_new1.py, utils/data_val.py,
+# utils/utils.py and utils/edge_util.py, verbatim apart from reading in-memory samples instead of image/masks/edges dirs
+# ---------------------------------------------------------------------------------------------------------------------
+def build_asgnet():
+    from dang.bench.official.asgnet.Network_PVTV3_PS_edge_1_new import Network
+    with _official_cwd(PVT_V2_B3_URL, subdirs=(".",)):
+        return Network(channels=96)                 # Train_PS_R_PVTV3_edge1_new1.py: Network(channels=96)
+
+
+def asgnet_test_logits(outputs):          # Test.py: result = model(image); res = result[4]
+    return outputs[4]
+
+
+def asg_dice_loss(predict, target):
+    smooth = 1
+    p = 2
+    valid_mask = torch.ones_like(target)
+    predict = predict.contiguous().view(predict.shape[0], -1)
+    target = target.contiguous().view(target.shape[0], -1)
+    valid_mask = valid_mask.contiguous().view(valid_mask.shape[0], -1)
+    num = torch.sum(torch.mul(predict, target) * valid_mask, dim=1) * 2 + smooth
+    den = torch.sum((predict.pow(p) + target.pow(p)) * valid_mask, dim=1) + smooth
+    loss = 1 - num / den
+    return loss.mean()
+
+
+def asg_get_coef(iter_percentage, method):
+    if method == "linear":
+        milestones = (0.3, 0.7)
+        coef_range = (0, 1)
+        min_point, max_point = min(milestones), max(milestones)
+        min_coef, max_coef = min(coef_range), max(coef_range)
+        if iter_percentage < min_point:
+            ual_coef = min_coef
+        elif iter_percentage > max_point:
+            ual_coef = max_coef
+        else:
+            ratio = (max_coef - min_coef) / (max_point - min_point)
+            ual_coef = ratio * (iter_percentage - min_point)
+    elif method == "cos":
+        coef_range = (0, 1)
+        min_coef, max_coef = min(coef_range), max(coef_range)
+        normalized_coef = (1 - np.cos(iter_percentage * np.pi)) / 2
+        ual_coef = normalized_coef * (max_coef - min_coef) + min_coef
+    else:
+        ual_coef = 1.0
+    return ual_coef
+
+
+def asg_cal_ual(seg_logits, seg_gts):
+    assert seg_logits.shape == seg_gts.shape, (seg_logits.shape, seg_gts.shape)
+    sigmoid_x = seg_logits.sigmoid()
+    loss_map = 1 - (2 * sigmoid_x - 1).abs().pow(2)
+    return loss_map.mean()
+
+
+def asg_adjust_lr(optimizer, init_lr, epoch, decay_rate=0.1, decay_epoch=30):
+    """ASGNet utils/utils.py: sets lr = decay * init_lr (unlike the PraNet-family adjust_lr, which multiplies)."""
+    decay = decay_rate ** (epoch // decay_epoch)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = decay * init_lr
+        lr = param_group['lr']
+    return lr
+
+
+def asg_generate_edge(mask):
+    """utils/edge_util.py generate_edge() for one cv2.imread(.., 0) mask, then the cv2.imwrite PNG / cv2.imread
+    round trip the training loader sees."""
+    import cv2
+    body = mask
+    body = cv2.distanceTransform(body, distanceType=cv2.DIST_L2, maskSize=5)
+    body = body ** 0.5
+
+    tmp = body[np.where(body > 0)]
+
+    if len(tmp) != 0:
+        a = np.where(body > 2)
+        body[a] = 255
+
+    res = mask - body
+    res = cv2.blur(res, (3, 3))
+    ok, buf = cv2.imencode(".png", res)
+    assert ok
+    return cv2.imdecode(buf, cv2.IMREAD_GRAYSCALE)
+
+
+def asg_cv_random_flip(img, label, edge):
+    # left right flip
+    flip_flag = random.randint(0, 1)
+    if flip_flag == 1:
+        img = img.transpose(Image.FLIP_LEFT_RIGHT)
+        label = label.transpose(Image.FLIP_LEFT_RIGHT)
+        edge = edge.transpose(Image.FLIP_LEFT_RIGHT)
+    return img, label, edge
+
+
+def asg_randomCrop(image, label, edge):
+    border = 30
+    image_width = image.size[0]
+    image_height = image.size[1]
+    crop_win_width = np.random.randint(image_width - border, image_width)
+    crop_win_height = np.random.randint(image_height - border, image_height)
+    random_region = (
+        (image_width - crop_win_width) >> 1, (image_height - crop_win_height) >> 1, (image_width + crop_win_width) >> 1,
+        (image_height + crop_win_height) >> 1)
+    return image.crop(random_region), label.crop(random_region), edge.crop(random_region)
+
+
+def asg_randomRotation(image, label, edge):
+    mode = Image.BICUBIC
+    if random.random() > 0.8:
+        random_angle = np.random.randint(-15, 15)
+        image = image.rotate(random_angle, mode)
+        label = label.rotate(random_angle, mode)
+        edge = edge.rotate(random_angle, mode)
+    return image, label, edge
+
+
+def asg_colorEnhance(image):
+    bright_intensity = random.randint(5, 15) / 10.0
+    image = ImageEnhance.Brightness(image).enhance(bright_intensity)
+    contrast_intensity = random.randint(5, 15) / 10.0
+    image = ImageEnhance.Contrast(image).enhance(contrast_intensity)
+    color_intensity = random.randint(0, 20) / 10.0
+    image = ImageEnhance.Color(image).enhance(color_intensity)
+    sharp_intensity = random.randint(0, 30) / 10.0
+    image = ImageEnhance.Sharpness(image).enhance(sharp_intensity)
+    return image
+
+
+def asg_randomPeper(img):
+    img = np.array(img)
+    noiseNum = int(0.0015 * img.shape[0] * img.shape[1])
+    for i in range(noiseNum):
+        randX = random.randint(0, img.shape[0] - 1)
+        randY = random.randint(0, img.shape[1] - 1)
+        if random.randint(0, 1) == 0:
+            img[randX, randY] = 0
+        else:
+            img[randX, randY] = 255
+    return Image.fromarray(img)
+
+
+def asg_seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+
+
+class ASGNetTrainDataset(torch.utils.data.Dataset):
+    """data_val.py PolypObjDataset over in-memory samples; the edge file of each mask is generated on the fly."""
+
+    def __init__(self, samples: list[dict], trainsize: int = 352):
+        import cv2
+        self.trainsize = trainsize
+        # filter_files(): keep triples whose image, mask and edge sizes agree (the edge is made from the mask)
+        self.samples = [s for s in samples
+                        if Image.open(io.BytesIO(s["img_bytes"])).size == Image.open(io.BytesIO(s["mask_bytes"])).size]
+        self.dropped = len(samples) - len(self.samples)
+        self.edges = [asg_generate_edge(cv2.imdecode(np.frombuffer(s["mask_bytes"], np.uint8), cv2.IMREAD_GRAYSCALE))
+                      for s in self.samples]
+        self.img_transform = transforms.Compose([
+            transforms.Resize((self.trainsize, self.trainsize)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+        self.gt_transform = transforms.Compose([
+            transforms.Resize((self.trainsize, self.trainsize)),
+            transforms.ToTensor()])
+
+        self.edge_transform = transforms.Compose([
+            transforms.Resize((self.trainsize, self.trainsize)),
+            transforms.ToTensor()])
+
+        self.kernel = np.ones((3, 3), np.uint8)
+        self.size = len(self.samples)
+
+    def __getitem__(self, index):
+        import cv2
+        s = self.samples[index]
+        image = Image.open(io.BytesIO(s["img_bytes"])).convert('RGB')
+        gt = Image.open(io.BytesIO(s["mask_bytes"])).convert('L')
+        edge = self.edges[index]
+        edge = cv2.dilate(edge, self.kernel, iterations=1)
+        edge = Image.fromarray(edge)
+
+        image, gt, edge = asg_cv_random_flip(image, gt, edge)
+        image, gt, edge = asg_randomCrop(image, gt, edge)
+        image, gt, edge = asg_randomRotation(image, gt, edge)
+
+        image = asg_colorEnhance(image)
+        gt = asg_randomPeper(gt)
+        edge = asg_randomPeper(edge)
+
+        image = self.img_transform(image)
+        gt = self.gt_transform(gt)
+        edge = self.edge_transform(edge)
+
+        edge_small = self.Threshold_process(edge)
+
+        return image, gt, edge_small
+
+    def Threshold_process(self, a):
+        one = torch.ones_like(a)
+        return torch.where(a > 0, one, a)
+
+    def __len__(self):
+        return self.size
+
+
+def train_asgnet(recipe, model, train_samples, device, log, num_workers: int = 2):
+    """Train_PS_R_PVTV3_edge1_new1.py main + train(), single process (the authors use DataParallel over 4 GPUs with the
+    same global batch of 40). The per-epoch val() only picks the best-MAE checkpoint and is replaced by final weights."""
+    import time
+    ds = ASGNetTrainDataset(train_samples, recipe.trainsize)
+    loader = torch.utils.data.DataLoader(dataset=ds, batch_size=recipe.batch_size, shuffle=True,
+                                         num_workers=num_workers, pin_memory=True, worker_init_fn=asg_seed_worker)
+    total_step = len(loader)
+    optimizer = torch.optim.Adam(model.parameters(), recipe.lr)
+    cosine_schedule = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=20, eta_min=1e-7)
+    log(f"official recipe {recipe.name}: optimizer=Adam lr={recipe.lr} epochs={recipe.epoch_arg - 1} "
+        f"batch={recipe.batch_size} clip={recipe.clip} adjust_lr({recipe.decay_rate}, {recipe.decay_epoch}) + "
+        f"CosineAnnealingLR(T_max=20, eta_min=1e-7) | train_images={len(ds)} (size-mismatch dropped={ds.dropped}) "
+        f"steps/epoch={total_step} loader_workers={num_workers}")
+    for epoch in range(1, recipe.epoch_arg):
+        t0 = time.time()
+        asg_adjust_lr(optimizer, recipe.lr, epoch, recipe.decay_rate, recipe.decay_epoch)
+        cosine_schedule.step()
+        lr_now = optimizer.param_groups[0]["lr"]
+        model.train()
+        loss_all, epoch_step = 0.0, 0
+        for i, (images, gts, edges) in enumerate(loader, start=1):
+            optimizer.zero_grad()
+            images = images.to(device, non_blocking=True)
+            gts = gts.to(device, non_blocking=True)
+            edges = edges.to(device, non_blocking=True)
+
+            preds = model(images)
+
+            ual_coef = asg_get_coef(iter_percentage=i / total_step, method='cos')
+            ual_loss = asg_cal_ual(seg_logits=preds[4], seg_gts=gts)
+            ual_loss *= ual_coef
+
+            loss_init = structure_loss(preds[0], gts) * 0.0625 + structure_loss(preds[1], gts) * 0.125 + \
+                structure_loss(preds[2], gts) * 0.25 + structure_loss(preds[3], gts) * 0.5
+            loss_final = structure_loss(preds[4], gts)
+
+            loss_edge = asg_dice_loss(preds[5], edges) * 0.0625 + asg_dice_loss(preds[6], edges) * 0.125 + \
+                asg_dice_loss(preds[7], edges) * 0.25 + asg_dice_loss(preds[8], edges) * 0.5
+
+            loss = loss_init + loss_final + loss_edge + 2 * ual_loss
+            loss.backward()
+            clip_gradient(optimizer, recipe.clip)
+            optimizer.step()
+            loss_all += float(loss.item())
+            epoch_step += 1
+        if not np.isfinite(loss_all):
+            raise FloatingPointError(f"non-finite training loss at epoch {epoch}")
+        log(f"Ep {epoch:03d}/{recipe.epoch_arg - 1:03d} loss_avg={loss_all / max(1, epoch_step):.4f} lr={lr_now:.3e} "
+            f"time={time.time() - t0:.1f}s")
+    return model
 
 
 RECIPES = {
@@ -179,6 +451,8 @@ RECIPES = {
                         100, 16, 0.5, 0.1, 200, polyp_pvt_loss, polyp_pvt_test_logits),
     "pranet_v2": Recipe("PraNet-V2 (PVT-PraNet-V2, PVTv2-B2)", "arXiv:2504.10986", build_pranet_v2, "Adam", 1e-4, 0.0,
                         30, 8, 0.5, 0.1, 50, pranet_v2_loss, pranet_v2_test_logits),
+    "asgnet": Recipe("ASGNet (PVTv2-B3)", "arXiv:2604.14755 / TCSVT 2026", build_asgnet, "Adam", 1e-4, 0.0,
+                     120, 40, 0.5, 0.1, 80, None, asgnet_test_logits, size_rates=(1,), train=train_asgnet),
 }
 
 

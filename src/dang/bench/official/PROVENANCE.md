@@ -7,6 +7,7 @@ Copied verbatim from the authors' repositories; the architectures are not modifi
 | `pranet/` | https://github.com/DengPingFan/PraNet | 95f12bd4e32ec954b5069654abae7de9473fd1f5 | `lib/PraNet_Res2Net.py`, `lib/Res2Net_v1b.py` |
 | `polyp_pvt/` | https://github.com/DengPingFan/Polyp-PVT | cd71fbf9fcd8c32cc0f33699f4e0186073c64dc4 | `lib/pvt.py`, `lib/pvtv2.py` |
 | `pranet_v2/` | https://github.com/ai4colonoscopy/PraNet-V2 | ca08522ae77cbda6c5056609e7951b502dbb08f2 | `binary_seg/lib/pranet.py`, `pvtv2.py`, `Res2Net_v1b.py`, `nn/` (minus `nn/modules/tests/`), `LICENSE` |
+| `asgnet/` | https://github.com/CSYSI/ASGNet | 97c4e746e94bb6a184a14775b771226eed88c3e2 | `ASGNet_26_TCSVT/lib/Network_PVTV3_PS_edge_1_new.py`, `module3_NEW_PS.py`, `module3_NEW_PS_edge.py`, `GatedConv.py`, `pvt_v2.py`, `LICENSE` |
 
 Only these edits were made, all outside the network definitions:
 
@@ -14,10 +15,14 @@ Only these edits were made, all outside the network definitions:
    `from lib.nn import` → `from .nn import` (PraNet-V2 `pranet.py`).
 2. PraNet `Res2Net_v1b.res2net50_v1b_26w_4s`: the authors' machine-local checkpoint path is replaced by the authors' own
    commented-out `model_zoo.load_url(model_urls['res2net50_v1b_26w_4s'])` (the same `res2net50_v1b_26w_4s-3cf99910.pth`).
+3. ASGNet `Network_PVTV3_PS_edge_1_new.py`: `from lib.X import` → `from .X import`, and the authors' absolute weight path
+   `torch.load('/pvt_v2_b3.pth')` → `torch.load('./pvt_v2_b3.pth')`. The other four ASGNet files are byte-identical.
+   Built with `Network(channels=96)` as in `Train_PS_R_PVTV3_edge1_new1.py`: 47.55M parameters (paper Table III: 47.47M).
 
 ImageNet weights are the files the official code expects: `res2net50_v1b_26w_4s-3cf99910.pth` (Res2Net authors' URL) and
-`pvt_v2_b2.pth` (https://github.com/whai362/PVT/releases/download/v2/pvt_v2_b2.pth), placed by `dang/bench/recipes.py`
+`pvt_v2_b2.pth` / `pvt_v2_b3.pth` (https://github.com/whai362/PVT/releases/download/v2/), placed by `dang/bench/recipes.py`
 at the relative paths the official constructors read (`./pretrained_pth/`, `./models/`).
 
 The training loops, losses, optimisers, schedules and test-time output fusion are re-implemented line by line in
-`dang/bench/recipes.py` from the official `MyTrain.py` / `Train.py` / `MyTrain_med.py` and test scripts at the same commits.
+`dang/bench/recipes.py` from the official `MyTrain.py` / `Train.py` / `MyTrain_med.py` / `Train_PS_R_PVTV3_edge1_new1.py` (+ ASGNet
+`utils/data_val.py`, `utils/utils.py`, `utils/edge_util.py`) and test scripts at the same commits.
