@@ -1,4 +1,5 @@
-% DANG architecture. Compile: pdflatex figs/arch_diagram.tex (standalone, built at full text width).
+% DANG architecture (selected model: frozen DINOv3 ViT-S/16 + Conv-LoRA, token pyramid, scale-aware decoder,
+% dual-prototype margin head). Compile: pdflatex figs/arch_diagram.tex (standalone, built at full text width).
 % Thumbnails come from figs/arch_thumbs.py (a Kvasir test frame and its ground-truth mask, illustration only).
 \documentclass[border=1pt]{standalone}
 \usepackage{tikz}
@@ -48,63 +49,42 @@
 
   % ---------------- input and stem
   \node[img] (input) {\includegraphics[width=12.5mm]{arch_input.png}};
-  \node[sub, below=0.6mm of input] (inlbl) {$I\in\mathbb{R}^{3\times352^2}$};
-  \node[minor, right=3.5mm of input, text width=13.5mm] (stem) {Retinex\\chromatic\\stem};
+  % ---------------- input and frozen encoder
+  \node[img] (input) {\includegraphics[width=12.5mm]{arch_input.png}};
+  \node[sub, below=0.6mm of input] {$I\in\mathbb{R}^{3\times352^2}$};
+  \node[frozenblk, right=8mm of input, text width=21mm, minimum height=22mm] (vit)
+       {DINOv3\\ViT-S/16 \frozen\\[2pt]{\scriptsize + Conv-LoRA}\\[-1pt]{\scriptsize in all 12 blocks}\\[-1pt]{\scriptsize (rank 16, trained)}};
+  \node[block, right=12mm of vit, text width=16mm, minimum height=22mm] (proj)
+       {Multi-depth\\readout\\[2pt]{\scriptsize $1{\times}1$ conv}\\[-1pt]{\scriptsize to $192$ ch.}};
 
-  % ---------------- two encoder streams
-  \coordinate[right=4mm of stem] (split);
-  \node[block, anchor=west, text width=20mm] (cnn) at ($(split)+(1.5mm,17.5mm)$)
-       {ConvNeXt-T\\[-0.5pt]{\scriptsize stages $s_4$--$s_{32}$}};
-  \node[frozenblk, anchor=west, text width=20mm] (vit) at ($(split)+(1.5mm,-17.5mm)$)
-       {DINOv2-B \frozen\\[-0.5pt]{\scriptsize + LoRA adapters}};
-
-  \node[minor, right=5mm of cnn, text width=18mm] (calib) {DINO style\\calibration\\[-0.5pt]{\scriptsize at $s_4,s_8$}};
-  \node[block, right=5mm of vit, text width=18mm] (dpt) {4-scale DPT\\reassembler};
-
-  % ---------------- fusion, decoder, output (middle row)
-  \path (calib.east) -- (dpt.east) coordinate[pos=0.5] (mid);
-  \node[ours, right=7.5mm of mid, text width=18mm] (fuse) {Strip\\fusion\\[-0.5pt]{\scriptsize at $s_8,s_{16},s_{32}$}};
-  \node[ours, right=8.5mm of fuse, text width=20mm] (dec) {Uncertainty\\strip decoder\\[-0.5pt]{\scriptsize $u{=}4p(1{-}p)$}};
-  \node[sumnode, right=4.5mm of dec] (sum) {$\odot$};
-  \node[img, right=3.5mm of sum] (out) {\includegraphics[width=12.5mm]{arch_output.png}};
+  % ---------------- decoding path (top) and prototype path (bottom)
+  \node[block, text width=19mm] (pyr) at ($(proj.east)+(27mm,12mm)$)
+       {Token pyramid\\[-0.5pt]{\scriptsize one depth per stride}};
+  \node[block, right=7mm of pyr, text width=21mm] (sad)
+       {Scale-aware\\decoder\\[-0.5pt]{\scriptsize residual DW + top-down}};
+  \node[ours, text width=21mm, minimum height=12mm] (proto) at ($(proj.east)+(27mm,-12mm)$)
+       {Dual-prototype\\margin head\\[-0.5pt]{\scriptsize prototypes, anchors,}\\[-1pt]{\scriptsize self-support}};
+  \node[sumnode] (sum) at ($(sad.east)+(8mm,-12mm)$) {$+$};
+  \node[img, right=9mm of sum] (out) {\includegraphics[width=12.5mm]{arch_output.png}};
   \node[sub, below=0.6mm of out] {$\hat Y=\sigma(Z)$};
 
-  % ---------------- prototype path (bottom row)
-  \node[ours, text width=20mm] (proto) at (fuse |- vit) {Dual-prototype\\+ self-support};
-  \node[ours, text width=20mm] (passe) at (dec |- vit) {PASSE\\support envelope};
-
   % ---------------- edges
-  \draw[flow] (input) -- (stem);
-  \draw[flow] (stem) -- (split) |- (cnn.west);
-  \draw[flow] (split) |- (vit.west);
-  \draw[flow] (cnn) -- node[edgelbl, above] {$F_{\mathrm{loc}}$} (calib);
-  \draw[flow] (vit) -- node[edgelbl, above] {$25^2$} (dpt);
-  \draw[cond] ($(vit.north east)+(-4mm,0)$) |- node[edgelbl, pos=0.75, above, text=orxblue!90!black] {$g_{\mathrm{dino}}$}
-              ($(calib.south)+(0,-6mm)$) -- (calib.south);
-  \draw[flow] (calib.east) -- ++(2.5mm,0) |- ($(fuse.west)+(0,1.5mm)$);
-  \draw[flow] (dpt.east) -- ++(2.5mm,0) |- node[edgelbl, pos=0.25, right] {$\hat S_s$} ($(fuse.west)+(0,-1.5mm)$);
-  \draw[flow] (fuse) -- (dec);
-  \draw[flow] (dpt) -- (proto);
-  \draw[flow] (proto) -- node[edgelbl, above] {$\pi_{\mathrm{proto}}$} (passe);
-  \draw[flow] (dec.south) -- node[edgelbl, right] {$M_4$} (passe.north);
-  \draw[flow] (dec) -- node[edgelbl, above] {$Z_{\mathrm{dec}}$} (sum);
-  \draw[flow] ($(proto.north east)+(-2mm,0)$) -- node[edgelbl, pos=0.62, left] {$0.2\,\pi_{\mathrm{proto}}$} ($(dec.south west)+(2.5mm,0)$);
-  \draw[flow] (passe.east) -| node[edgelbl, pos=0.25, below] {$\mathcal{E},P_{\mathrm{sem}}$} (sum.south);
-  \draw[flow] (sum) -- (out);
+  \draw[flow] (input) -- node[edgelbl, above] {$448^2$} (vit);
+  \draw[flow] (vit) -- node[edgelbl, above] {$384{\times}28^2$} (proj);
+  \draw[flow] (proj.east) -- ++(5mm,0) coordinate (fork) |- node[edgelbl, pos=0.68, above] {$T_3,T_6,T_9,T_{12}$} (pyr.west);
+  \draw[flow] (fork) |- node[edgelbl, pos=0.68, above] {$T_6,T_9,T_{12}$} (proto.west);
+  \draw[flow] (pyr) -- node[edgelbl, above] {$s_4$--$s_{32}$} (sad);
+  \node[edgelbl, below=0.3mm of proto.south] {$\pi_{\mathrm{proto}}$ on the $28{\times}28$ grid};
+  \draw[flow] (sad.east) -| node[edgelbl, pos=0.7, left] {$Z_{\mathrm{SAD}}$} (sum.north);
+  \draw[flow] (proto.east) -| node[edgelbl, pos=0.3, above] {$0.2\,\pi_{\mathrm{proto}}$, upsampled} (sum.south);
+  \draw[flow] (sum) -- node[edgelbl, above] {$\uparrow352^2$} (out);
+  \draw[cond] ($(sad.north east)+(-4mm,0)$) -- ++(0,3.5mm) node[edgelbl, anchor=south, text=orxblue!90!black] {deep supervision at $s_8$--$s_{32}$};
 
-  % ---------------- lanes and legend
-  \begin{scope}[on background layer]
-    \node[lane, fit=(cnn)(calib)] (local) {};
-    \node[lane, fit=(vit)(dpt)] (sem) {};
-  \end{scope}
-  \node[lanelbl, anchor=south west] at (local.north west) {Local stream (trainable CNN)};
-  \node[lanelbl, anchor=north west] at (sem.south west) {Semantic stream (foundation model)};
-
-  \node[anchor=south east, font=\sffamily\scriptsize, text=black!65, inner sep=0pt] (legend) at ($(out.east |- local.north)+(0,0.6mm)$)
+  % ---------------- legend
+  \node[anchor=north east, font=\sffamily\scriptsize, text=black!65, inner sep=0pt] at ($(out.east |- proto.south)+(0,-1mm)$)
     {\tikz[baseline=-0.6ex]\node[ours, minimum height=2mm, text width=2.5mm, inner sep=0pt]{};~proposed
-     \quad\tikz[baseline=-0.6ex]\node[minor, minimum height=2mm, text width=2.5mm, inner sep=0pt]{};~no measurable gain
      \quad\frozen~frozen
-     \quad\tikz[baseline=-0.6ex]\draw[cond] (0,0) -- (5mm,0);~conditioning};
+     \quad\tikz[baseline=-0.6ex]\draw[cond] (0,0) -- (5mm,0);~training only};
 
 \end{tikzpicture}
 \end{document}

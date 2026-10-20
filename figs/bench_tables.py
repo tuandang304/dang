@@ -1,0 +1,179 @@
+"""Write the LaTeX table rows of the paper from figs/bench_metrics.json (made by figs/aggregate_bench.py).
+
+Cells whose data do not exist yet (fewer than five seeds for a five-seed row, no PolypDB run, no latency
+measurement) are written as "--" so the paper compiles and the gap is visible. Rerun both scripts after new runs land:
+
+    uv run --isolated --no-project --with numpy --with scipy python figs/aggregate_bench.py
+    python3 figs/bench_tables.py
+"""
+
+import json
+from pathlib import Path
+
+HERE = Path(__file__).parent
+M = json.loads((HERE / "bench_metrics.json").read_text())
+G, T, D = M["groups"], M["tests"], M["deploy"]
+# display order: in domain, primary external, other external, final test
+COHORTS = ["Kvasir", "CVC-ClinicDB", "CVC-ColonDB", "ETIS-LaribPolypDB", "PolypGen", "CVC-300", "PolypDB"]
+STD = ["Kvasir", "CVC-ClinicDB", "CVC-ColonDB", "ETIS-LaribPolypDB", "CVC-300"]
+PRIMARY = ["CVC-ColonDB", "ETIS-LaribPolypDB", "PolypGen"]
+NA = "--"
+
+# display name, group key, trainable params (M; all weights are trained in the published models)
+MAIN = [("PraNet~\\cite{fan2020pranet}", "PraNet", None), ("Polyp-PVT~\\cite{dong2021polyp}", "Polyp-PVT", None),
+        ("PraNet-V2~\\cite{hu2026pranetv2}", "PraNet-V2", None), ("SegDINO~\\cite{yang2025segdino}", "SegDINO", 2.48),
+        ("\\textbf{DANG (ours)}", "DANG", 1.94)]
+DEPLOY_NAME = {"PraNet": "PraNet (Res2Net-50)", "Polyp-PVT": "Polyp-PVT (PVTv2-B2)", "PraNet-V2": "PraNet-V2 (PVTv2-B2)",
+               "DANG": ["DANG (R2-b): token pyramid, SAD", "DANG (R2-b, selected): token pyramid + SAD"], "V8-b": "V8-b: dual stream, fg/bg decoder, PASSE",
+               "V12-b": "V12-b: token pyramid, fg/bg decoder, PASSE", "R2-a": "R2-a: token pyramid, fg/bg decoder, no PASSE",
+               "R2-c": ["R2-c: token pyramid, fg/bg query decoder", "R2-c: token pyramid + fg/bg query decoder"]}
+
+
+def deploy(k):
+    names = DEPLOY_NAME.get(k, [])
+    for n in ([names] if isinstance(names, str) else names):
+        if n in D:
+            return D[n]
+    return {}
+# published toolbox mDice (%) on the five standard test sets
+PUBLISHED = [("PraNet (published)~\\cite{fan2020pranet}", [89.8, 89.9, 70.9, 62.8, 87.1]),
+             ("Polyp-PVT (published)$^{\\ddagger}$~\\cite{dong2021polyp}", [91.7, 93.7, 80.8, 78.7, 90.0])]
+
+
+INTERIM = ("DANG", "V12-b", "R2-c")   # five-seed runs still landing: show the seeds so far, marked with a dagger
+
+
+def cell(group, cohort, metric="dice", need=5, bold=False, mark=""):
+    c = G.get(group, {}).get("cohorts", {}).get(cohort, {}).get(metric)
+    if c is not None and c["n"] < need and group in INTERIM and need == 5:
+        sd = f"_{{\\pm {c['sd']:.1f}}}" if c.get("sd") is not None else ""
+        return f"${c['mean']:.1f}{sd}{{}}^{{\\dagger}}$"
+    if c is None or c["n"] < need:
+        return NA
+    v = f"{c['mean']:.1f}"
+    v = f"\\mathbf{{{v}}}" if bold else v
+    sd = f"_{{\\pm {c['sd']:.1f}}}" if c.get("sd") is not None and need > 1 else ""
+    return f"${v}{sd}${mark}"
+
+
+def best(groups, cohort, metric="dice", need=5):
+    vals = {g: G[g]["cohorts"][cohort][metric]["mean"] for g in groups
+            if g in G and cohort in G[g]["cohorts"] and G[g]["cohorts"][cohort][metric]["n"] >= need}
+    return max(vals, key=vals.get) if vals else None
+
+
+def sig_mark(baseline, cohort):
+    """* when DANG is better than this baseline after Holm correction (seed-level paired t-test, 5 seeds)."""
+    r = T.get(baseline, {}).get(cohort, {})
+    if len(r.get("seeds", [])) >= 5 and r.get("p_seed_holm", 1.0) < 0.05 and r["delta"] > 0:
+        return "$^{*}$"
+    return ""
+
+
+def fmt(v, nd=1):
+    return NA if v is None else f"{v:.{nd}f}"
+
+
+def main_rows():
+    keys = [k for _, k, _ in MAIN]
+    bests = {c: best(keys, c) for c in COHORTS}
+    out = []
+    for name, k, trainable in MAIN:
+        params = G.get(k, {}).get("params_m")
+        tr = trainable if trainable is not None else params
+        cells = [cell(k, c, bold=(bests[c] == k), mark=sig_mark(k, c) if k != "DANG" and c in PRIMARY else "")
+                 for c in COHORTS]
+        if k == "DANG":
+            out.append("\\midrule")
+        out.append(f"{name} & {fmt(params)} & {fmt(tr, 2 if tr and tr < 10 else 1)} & " + " & ".join(cells) + " \\\\")
+    return out
+
+
+def toolbox_rows():
+    keys = [k for _, k, _ in MAIN]
+    out = [f"{n} & " + " & ".join(f"${v:.1f}$" for v in vals) + " \\\\" for n, vals in PUBLISHED]
+    out.append("\\midrule")
+    for metric in ("mdice_tb",):
+        bests = {c: best(keys, c, metric) for c in STD}
+        for name, k, _ in MAIN:
+            out.append(f"{name} & " + " & ".join(cell(k, c, metric, bold=(bests[c] == k)) for c in STD) + " \\\\")
+    return out
+
+
+ABLATION = [("Dual stream: ConvNeXt-T + ViT-S, fg/bg decoder, PASSE", "V8-b"),
+            ("Token pyramid only, fg/bg decoder, PASSE", "V12-b"),
+            ("\\quad without PASSE", "R2-a"),
+            ("Token pyramid, fg/bg query decoder", "R2-c"),
+            ("\\textbf{DANG}: token pyramid, scale-aware decoder", "DANG")]
+
+
+def ablation_rows():
+    six = COHORTS[:6]
+    out = []
+    for need, label in ((1, "Seed 42"), (5, "Five seeds")):
+        rows = ABLATION if need == 1 else [r for r in ABLATION if r[1] in ("V12-b", "R2-c", "DANG")]
+        keys = [k for _, k in rows]
+        bests = {c: best(keys, c, need=need) for c in six}
+        out.append(f"\\multicolumn{{9}}{{@{{}}l}}{{\\textit{{{label}}}}} \\\\")
+        for name, k in rows:
+            dep = deploy(k)
+            params = G.get(k, {}).get("params_m")
+            ms = dep.get("graph_half_bs1_ms")
+            cells = []
+            for c in six:
+                g = G.get(k, {}).get("cohorts", {}).get(c, {}).get("dice")
+                if g is not None and need == 5 and 1 < g["n"] < 5 and k in INTERIM:
+                    cells.append(f"${g['mean']:.1f}^{{\\dagger}}$")
+                    continue
+                if g is None or g["n"] < need:
+                    cells.append(NA)
+                    continue
+                v = f"{(g['seeds'][0] if need == 1 else g['mean']):.1f}"
+                cells.append(f"$\\mathbf{{{v}}}$" if bests[c] == k else f"${v}$")
+            out.append(f"{name} & {fmt(params)} & {fmt(ms, 1)} & " + " & ".join(cells) + " \\\\")
+        if need == 1:
+            out.append("\\midrule")
+    return out
+
+
+def stats_rows():
+    names = {"PraNet": "PraNet", "Polyp-PVT": "Polyp-PVT", "PraNet-V2": "PraNet-V2", "SegDINO": "SegDINO"}
+    out = []
+    for b, nm in names.items():
+        cells = []
+        for c in PRIMARY:
+            r = T.get(b, {}).get(c, {})
+            if len(r.get("seeds", [])) < 5:
+                cells += [NA] * 3
+                continue
+            p = lambda x: "$<$0.001" if x < 0.001 else f"{x:.3f}"
+            cells += [f"${r['delta']:+.1f}$", p(r["p_seed_holm"]), f"{p(r['p_image_holm'])} ({r['wins']}/{r['losses']})"]
+        out.append(f"{nm} & " + " & ".join(cells) + " \\\\")
+    return out
+
+
+def eff_rows():
+    rows = [("PraNet", "PraNet"), ("Polyp-PVT", "Polyp-PVT"), ("PraNet-V2", "PraNet-V2"), ("SegDINO", "SegDINO"),
+            ("\\textbf{DANG (ours)}", "DANG")]
+    trainable = {"SegDINO": 2.48, "DANG": 1.94}
+    out = []
+    for name, k in rows:
+        d = deploy(k)
+        params = G.get(k, {}).get("params_m")
+        tr = trainable.get(k, params)
+        out.append(f"{name} & {fmt(params)} & {fmt(tr, 2 if tr and tr < 10 else 1)} & {fmt(d.get('gmacs'))} & "
+                   f"{fmt(d.get('eager_fp16_bs1_ms'))} & {fmt(d.get('graph_half_bs1_ms'))} & "
+                   f"{fmt(d.get('eager_fp16_bs8_img_per_s'), 0)} \\\\")
+    return out
+
+
+def main():
+    for name, rows in (("tab_main_rows", main_rows()), ("tab_toolbox_rows", toolbox_rows()),
+                       ("tab_ablation_rows", ablation_rows()), ("tab_stats_rows", stats_rows()),
+                       ("tab_eff_rows", eff_rows())):
+        (HERE / f"{name}.tex").write_text("% generated by figs/bench_tables.py -- do not edit\n" + "\n".join(rows) + "\n")
+        print(name, len(rows), "rows")
+
+
+if __name__ == "__main__":
+    main()
