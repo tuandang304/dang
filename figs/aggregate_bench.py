@@ -33,10 +33,12 @@ GROUPS = {
     "V12-b": ["fb86a0e1", "8f89680e"],
     "R2-a": ["dcfac57f"],
     "R2-c": ["28d364fe", "77e8b315"],
+    "A1-noproto": ["87b2758d"],                                         # DANG without the prototype head
+    "A2-nolora": ["27a7c9d3"],                                          # DANG without Conv-LoRA (fully frozen)
     "DANG": ["842016dd", "9963f524", "7e80a4ed"],                       # R2-b, the selected model; E1 adds PolypDB
 }
 DEPLOY_RUNS = ["55037939", "73f86fbe", "ba33170f"]   # one-host T4 latency: D3, D4, D5 (D5 adds SegDINO; later run wins)
-BASELINES = ["PraNet", "Polyp-PVT", "PraNet-V2", "SegDINO", "V12-b", "R2-c"]   # last two: five-seed ablation variants
+BASELINES = ["PraNet", "Polyp-PVT", "PraNet-V2", "SegDINO", "V12-b", "R2-c", "A1-noproto", "A2-nolora"]   # last two: five-seed ablation variants
 COHORTS = ["Kvasir", "CVC-ClinicDB", "CVC-ColonDB", "ETIS-LaribPolypDB", "CVC-300", "PolypGen", "PolypDB"]
 PRIMARY = ["CVC-ColonDB", "ETIS-LaribPolypDB", "PolypGen"]
 METRICS = {"dice": "dice_native", "mdice_tb": "mdice_tb", "iou": "iou_native", "bf1": "boundary_f1", "hd95": "hd95",

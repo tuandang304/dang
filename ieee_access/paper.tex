@@ -38,7 +38,7 @@ AND \uppercase{Le Phu-Nguyen}\authorrefmark{2}}
 \corresp{Corresponding author: Le Phu-Nguyen (e-mail: nguyenlp@vaa.edu.vn).}
 
 \begin{abstract}
-Polyp segmentation networks score well on the colonoscopy centres they are trained on but lose accuracy on frames from other centres and devices. We present DANG, a segmentation network built on a frozen DINOv3 ViT-S/16 foundation model with convolutional low-rank adapters. DANG reads tokens from four depths of the frozen encoder, arranges them into a four-scale pyramid decoded by a scale-aware decoder, and adds a dual-prototype margin head that scores every token against learned foreground and background prototypes and image-specific self-support centroids. Of its $23.5$M parameters only $1.9$M are trained. We train on the standard $1{,}450$-image Kvasir-SEG and CVC-ClinicDB split and test on the five standard test sets, on $1{,}399$ deduplicated frames from the six centres of PolypGen and, as a held-out final test, on $1{,}376$ frames of PolypDB. PraNet, Polyp-PVT, PraNet-V2 and SegDINO, which uses the same frozen DINOv3 encoder, are retrained from their official code with the settings of their papers, every model is evaluated at its final epoch with one evaluator, and all results are means over five seeds with paired tests. On the three cohorts our claims rest on, DANG reaches $80.7$, $82.7$ and $84.2\%$ mean Dice on CVC-ColonDB, ETIS-LaribPolypDB and PolypGen, against $80.9$, $75.5$ and $81.4\%$ for the best retrained model on each: a tie on CVC-ColonDB and gains of $7.3$ and $2.7$ points that are significant against every compared model after Holm correction. On PolypDB, which was not used for any design decision, it reaches $89.8\%$ against $86.7\%$ for the best retrained model. On the in-domain CVC-ClinicDB test set it trails Polyp-PVT by $3.2$ points. A batch-1 frame takes $9.3$~ms on an NVIDIA T4 with CUDA graphs, less than Polyp-PVT and PraNet-V2.
+Polyp segmentation networks score well on the colonoscopy centres they are trained on but lose accuracy on frames from other centres and devices. We present DANG, a segmentation network built on a frozen DINOv3 ViT-S/16 foundation model with convolutional low-rank adapters. DANG reads tokens from four depths of the frozen encoder, arranges them into a four-scale pyramid decoded by a scale-aware decoder, and adds a dual-prototype margin head that scores every token against learned foreground and background prototypes and image-specific self-support centroids. Of its $23.5$M parameters only $1.9$M are trained; ablations show that the adapters account for $5.5$--$10.8$ points on the external cohorts and the prototype head for a smaller $0.2$--$0.9$. We train on the standard $1{,}450$-image Kvasir-SEG and CVC-ClinicDB split and test on the five standard test sets, on $1{,}399$ deduplicated frames from the six centres of PolypGen and, as a held-out final test, on $1{,}376$ frames of PolypDB. PraNet, Polyp-PVT, PraNet-V2 and SegDINO, which uses the same frozen DINOv3 encoder, are retrained from their official code with the settings of their papers, every model is evaluated at its final epoch with one evaluator, and all results are means over five seeds with paired tests. On the three cohorts our claims rest on, DANG reaches $80.7$, $82.7$ and $84.2\%$ mean Dice on CVC-ColonDB, ETIS-LaribPolypDB and PolypGen, against $80.9$, $75.5$ and $81.4\%$ for the best retrained model on each: a tie on CVC-ColonDB and gains of $7.3$ and $2.7$ points that are significant against every compared model after Holm correction. On PolypDB, which was not used for any design decision, it reaches $89.8\%$ against $86.7\%$ for the best retrained model. On the in-domain CVC-ClinicDB test set it trails Polyp-PVT by $3.2$ points. A batch-1 frame takes $9.3$~ms on an NVIDIA T4 with CUDA graphs, less than Polyp-PVT and PraNet-V2.
 \end{abstract}
 
 \begin{keywords}
@@ -66,7 +66,7 @@ We present \textbf{DANG} (Figure~\ref{fig:arch}) and make three contributions:
 \begin{itemize}
   \item \textbf{A frozen-foundation-model segmenter with a prototype margin head.} DANG adapts a frozen DINOv3 ViT-S/16 with convolutional low-rank adapters, decodes a token pyramid with a scale-aware decoder, and adds a dual-prototype margin head with test-time self-support. It trains $1.9$M of its $23.5$M parameters and needs no convolutional backbone.
   \item \textbf{A controlled benchmark.} The standard training split; the five standard test sets kept as published; two deduplicated multi-centre cohorts, PolypGen~\cite{ali2023polypgen} and PolypDB~\cite{jha2024polypdb}, the latter held out as a final test; four published models retrained from their official code; final-epoch checkpoints, one evaluator, five seeds and paired tests with multiplicity correction.
-  \item \textbf{A decoder comparison.} On the same frozen encoder and token pyramid we compare three decoders over five seeds and report what each costs in latency on an NVIDIA T4.
+  \item \textbf{Ablations.} Over five seeds we remove the adapters and the prototype head in turn, and on the same frozen encoder and token pyramid we compare three decoders and report what each costs in latency on an NVIDIA T4.
 \end{itemize}
 
 \section{Related Work}
@@ -235,7 +235,7 @@ Inference cost is measured for all models in one process on one NVIDIA T4 at bat
 \label{sec:sota}
 Table~\ref{tab:main} compares DANG with the four retrained models. Among them, Polyp-PVT is the strongest on ColonDB ($80.9\%$) and PolypGen ($81.4\%$), and PraNet-V2 on ETIS ($75.5\%$). DANG reaches $80.7\%$ on ColonDB, $82.7\%$ on ETIS and $84.2\%$ on PolypGen. On ColonDB it ties Polyp-PVT ($-0.2$ points); on ETIS and PolypGen it is $7.3$ and $2.7$ points above the best retrained model, with the smallest seed-to-seed SD of all models on the three primary cohorts ($0.2$--$0.7$ points). On Kvasir it is the best model ($92.2\%$, $+1.2$ points), while on ClinicDB ($89.7\%$) it is $3.2$ points below Polyp-PVT and on CVC-300 ($88.8\%$) $1.0$ point below PraNet. ClinicDB is one of the two training centres, so the models with fully fine-tuned encoders may fit it more closely; with $62$ images, one image is worth $1.6$ points, so the gap amounts to two images. On the held-out PolypDB, run once after all design decisions, DANG reaches $89.8\pm0.1\%$, $3.1$ points above Polyp-PVT ($86.7\%$), $4.4$ and $5.0$ points above PraNet-V2 and PraNet, and $17.5$ points above SegDINO; against Polyp-PVT this single pre-specified comparison is significant at the seed level (paired $t$-test, $p=0.005$) and at the image level ($p<0.001$; $713$ frames better, $662$ worse).
 
-SegDINO, which uses the same frozen encoder with a light decoder, stays far below every other model, at $51.5\%$ on ColonDB and $43.2\%$ on ETIS. It is trained at the $256\times256$ input of its paper and without adapters, so this gap mixes input resolution and adaptation; Section~\ref{sec:ablation} compares decoders on the DANG encoder at a fixed resolution. We keep it as the reference for a frozen foundation model with a light head: DANG uses the same frozen weights and trains a comparable number of parameters ($1.9$M against $2.5$M).
+SegDINO, which uses the same frozen encoder with a light decoder, stays far below every other model, at $51.5\%$ on ColonDB and $43.2\%$ on ETIS. It is trained at the $256\times256$ input of its paper and without adapters, so this gap mixes input resolution, adaptation and decoder; Section~\ref{sec:components} shows that DANG with a fully frozen encoder still exceeds it by $14.5$--$28.7$ points on the primary cohorts. We keep it as the reference for a frozen foundation model with a light head: DANG uses the same frozen weights and trains a comparable number of parameters ($1.9$M against $2.5$M).
 
 \begin{table*}[!t]
   \centering
@@ -278,6 +278,31 @@ SegDINO, which uses the same frozen encoder with a light decoder, stays far belo
 \end{table}
 
 \paragraph{Link to published numbers.} Table~\ref{tab:toolbox} reports the toolbox metric next to published scores. Our Polyp-PVT is within $1.2$ points of its published scores on Kvasir, ClinicDB and ColonDB, and $2.2$ and $4.3$ points below them on CVC-300 and ETIS. ETIS has the largest seed-to-seed spread of the five sets, and part of the published advantage may come from selecting the checkpoint on test data. Our PraNet is $0.3$ points below its published score on Kvasir and above it on the other four sets. Under this metric DANG leads on ETIS ($81.0\%$, also above the published $78.7\%$ of Polyp-PVT), ties Polyp-PVT on Kvasir and CVC-300, and ranks below it on ClinicDB and ColonDB ($79.4$ against $80.6\%$).
+
+\subsection{Component Ablation}
+\label{sec:components}
+\begin{table*}[!t]
+  \centering
+  \caption{\textbf{Component ablation of DANG.} Dice (\%) at threshold $0.5$, mean $\pm$ SD over $5$ seeds, same recipe, evaluator and T4 hardware. Removing the prototype head also removes its logit term and its loss. $\Delta$: mean Dice difference on the primary cohorts, DANG minus the variant (pp). $^{*}$: significant after Holm correction at the seed and the image level; $^{\dagger}$: significant at the image level only (Wilcoxon signed-rank on seed-averaged Dice, Holm over the three cohorts). Params and Trained in millions.}
+  \label{tab:components}
+  \vspace{2pt}
+  \setlength{\tabcolsep}{4pt}\resizebox{\textwidth}{!}{%
+  \begin{tabular}{l cc cccccc ccc}
+    \toprule
+    & & & & & & & & & \multicolumn{3}{c}{$\Delta$ \textbf{(DANG $-$ variant)}} \\
+    \cmidrule(lr){10-12}
+    \textbf{Variant} & Params & Trained & Kvasir & ClinicDB & ColonDB & ETIS & PolypGen & CVC-300 & ColonDB & ETIS & PolypGen \\
+    \midrule
+    \rows{../figs/tab_component_rows.tex}
+    \bottomrule
+  \end{tabular}%
+  }
+\end{table*}
+Table~\ref{tab:components} removes each trained component of DANG in turn, over five seeds.
+
+\paragraph{Adapters.} Using the DINOv3 encoder fully frozen, without Conv-LoRA, costs $7.3$, $10.8$ and $5.5$ points on ColonDB, ETIS and PolypGen, the largest effect in the paper, significant at both levels (adjusted $p<0.001$). The $0.15$M adapter parameters are therefore what lets the frozen encoder transfer to colonoscopy. The fully frozen variant still exceeds SegDINO by $21.9$, $28.7$ and $14.5$ points on these cohorts, so SegDINO's low scores (Table~\ref{tab:main}) are not explained by the missing adapters alone; its lower input resolution and lighter decoder also contribute.
+
+\paragraph{Prototype head.} Removing the dual-prototype margin head, its logit term and its loss lowers Dice by $0.7$, $0.9$ and $0.2$ points on the primary cohorts and halves the trained parameters ($1.94$M to $0.91$M). The effect is small: it is consistent across images (adjusted Wilcoxon $p<0.001$, $0.022$ and $<0.001$; on ColonDB DANG is better on $224$ images and worse on $154$) but not significant over five seeds (adjusted $p=0.20$, $0.31$ and $0.31$). On the in-domain sets the differences are between $-0.4$ and $+0.2$ points.
 
 \subsection{Choice of Decoder}
 \label{sec:ablation}
@@ -339,7 +364,7 @@ Table~\ref{tab:eff} lists the cost of each model, and Figure~\ref{fig:latency} p
 \end{enumerate}
 
 \section{Conclusion}
-DANG segments polyps from a frozen DINOv3 ViT-S/16 with convolutional adapters, a token pyramid, a scale-aware decoder and a dual-prototype margin head, training $1.9$M of $23.5$M parameters. Retrained under one protocol with five seeds, it ties Polyp-PVT on CVC-ColonDB and exceeds every compared model on ETIS-LaribPolypDB ($+7.3$ points) and PolypGen ($+2.7$ points), and on the held-out PolypDB ($89.8\%$, $+3.1$ points), at a T4 latency of $9.3$~ms, while it trails Polyp-PVT on the in-domain CVC-ClinicDB. All four pyramid levels come from the frozen encoder, without a convolutional backbone, and a heavier fg/bg decoder with a support envelope buys up to $1$ further point at $24\%$ more latency. Next steps are training on other centres, video-level evaluation and a reader study.
+DANG segments polyps from a frozen DINOv3 ViT-S/16 with convolutional adapters, a token pyramid, a scale-aware decoder and a dual-prototype margin head, training $1.9$M of $23.5$M parameters. Retrained under one protocol with five seeds, it ties Polyp-PVT on CVC-ColonDB and exceeds every compared model on ETIS-LaribPolypDB ($+7.3$ points) and PolypGen ($+2.7$ points), and on the held-out PolypDB ($89.8\%$, $+3.1$ points), at a T4 latency of $9.3$~ms, while it trails Polyp-PVT on the in-domain CVC-ClinicDB. The Conv-LoRA adapters are essential ($5.5$--$10.8$ points), the prototype head adds a small but image-level consistent $0.2$--$0.9$ points, all four pyramid levels come from the frozen encoder without a convolutional backbone, and a heavier fg/bg decoder with a support envelope buys up to $1$ further point at $24\%$ more latency. Next steps are training on other centres, video-level evaluation and a reader study.
 
 \appendices
 
