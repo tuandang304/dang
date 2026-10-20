@@ -8,6 +8,7 @@ measurement) are written as "--" so the paper compiles and the gap is visible. R
 """
 
 import json
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -60,7 +61,10 @@ def cell(group, cohort, metric="dice", need=5, bold=False, mark=""):
 def best(groups, cohort, metric="dice", need=5):
     vals = {g: G[g]["cohorts"][cohort][metric]["mean"] for g in groups
             if g in G and cohort in G[g]["cohorts"] and G[g]["cohorts"][cohort][metric]["n"] >= need}
-    return max(vals, key=vals.get) if vals else None
+    if not vals:
+        return set()
+    top = round(max(vals.values()), 1)
+    return {g for g, v in vals.items() if round(v, 1) == top}     # ties at display precision are all bold
 
 
 def sig_mark(baseline, cohort):
@@ -72,7 +76,8 @@ def sig_mark(baseline, cohort):
 
 
 def fmt(v, nd=1):
-    return NA if v is None else f"{v:.{nd}f}"
+    # half-up from the decimal value (latencies are logged at 2 dp, so binary-float rounding would turn 9.35 into 9.3)
+    return NA if v is None else str(Decimal(str(v)).quantize(Decimal(1).scaleb(-nd), rounding=ROUND_HALF_UP))
 
 
 def main_rows():
@@ -82,7 +87,7 @@ def main_rows():
     for name, k, trainable in MAIN:
         params = G.get(k, {}).get("params_m")
         tr = trainable if trainable is not None else params
-        cells = [cell(k, c, bold=(bests[c] == k), mark=sig_mark(k, c) if k != "DANG" and c in PRIMARY else "")
+        cells = [cell(k, c, bold=(k in bests[c]), mark=sig_mark(k, c) if k != "DANG" and c in PRIMARY else "")
                  for c in COHORTS]
         if k == "DANG":
             out.append("\\midrule")
@@ -97,7 +102,7 @@ def toolbox_rows():
     for metric in ("mdice_tb",):
         bests = {c: best(keys, c, metric) for c in STD}
         for name, k, _ in MAIN:
-            out.append(f"{name} & " + " & ".join(cell(k, c, metric, bold=(bests[c] == k)) for c in STD) + " \\\\")
+            out.append(f"{name} & " + " & ".join(cell(k, c, metric, bold=(k in bests[c])) for c in STD) + " \\\\")
     return out
 
 
@@ -113,13 +118,13 @@ def ablation_rows():
     out = []
     for name, k in ABLATION:
         dep = deploy(k)
-        cells = [cell(k, c, bold=(bests[c] == k)) for c in six]
+        cells = [cell(k, c, bold=(k in bests[c])) for c in six]
         out.append(f"{name} & {fmt(G.get(k, {}).get('params_m'))} & {fmt(dep.get('gmacs'))} & "
                    f"{fmt(dep.get('graph_half_bs1_ms'))} & " + " & ".join(cells) + " \\\\")
     return out
 
 
-COMPONENTS = [("\\textbf{DANG}", "DANG", 1.94), ("\\quad without prototype head", "A1-noproto", 0.91),
+COMPONENTS = [("\\textbf{DANG}", "DANG", 1.94), ("\\quad without prototype head", "A1-noproto", 0.92),
               ("\\quad without adapters (frozen encoder)", "A2-nolora", 1.79),
               # trained = total minus the 21.58M frozen encoder shared by all rows (A3 logs only the total)
               ("\\quad without adapters and prototype head", "A3-pyramid-only", 0.77)]

@@ -59,7 +59,7 @@
 
   % =============== (a) Conv-LoRA adapter (top to bottom)
   \node[plabel] (la) at (0,0) {(a)};
-  \node[ptitle, right=1mm of la.north east, anchor=north west] {Conv-LoRA adapter};
+  \node[ptitle, right=1mm of la.north east, anchor=north west] {Conv.\ bottleneck adapter};
   \node[tens] (xin) at (10mm,-7mm) {$x$};
   \node[smfrozen, below=3mm of xin, text width=15mm] (blk) {ViT block \frozen};
   \coordinate[below=2.5mm of blk] (y);

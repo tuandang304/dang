@@ -51,7 +51,7 @@
   \node[img] (input) {\includegraphics[width=12.5mm]{arch_input.png}};
   \node[sub, below=0.6mm of input] {$I$, $352\times352$};
   \node[frozenblk, right=8mm of input, text width=17mm, minimum height=21mm] (vit)
-       {DINOv3\\ViT-S/16 \frozen\\[2pt]{\scriptsize + Conv-LoRA}\\[-1pt]{\scriptsize in all 12 blocks}};
+       {DINOv3\\ViT-S/16 \frozen\\[2pt]{\scriptsize + adapters}\\[-1pt]{\scriptsize after all 12 blocks}};
   \node[block, right=11mm of vit, text width=14mm, minimum height=21mm] (proj)
        {Token\\readout\\[2pt]{\scriptsize blocks}\\[-1pt]{\scriptsize 3, 6, 9, 12}};
   \coordinate (fork) at ($(proj.east)+(3mm,0)$);
