@@ -4,7 +4,7 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "d0m_v8b_a100_seed42"
+    variant_name: str = "v12a_vittrunk_stem_a100_seed42"
     seed: int = 42
     # External SOTA selector (dang/sota.py) and loss: "shared" = Eq. (9) of the paper, "official" = method's own loss
     arch: str = "dang_v5"
@@ -42,7 +42,7 @@ class ExperimentConfig:
     v5_ibn: bool = False                                # round-1: IBN half instance norm after ConvNeXt stages 0-1
     v5_phase: bool = False                              # round-1: Fourier phase-only structure branch at stride 4
     # v12 line (deployable DANG): see dang_v5.py and dang/deploy_bench.py
-    v12_trunk: str = "dual"                             # "dual" = V8-b; "vit" = frozen ViT trunk + shallow conv stem
+    v12_trunk: str = "vit"                             # "dual" = V8-b; "vit" = frozen ViT trunk + shallow conv stem
     v12_head: str = "v8b"                               # "v8b" = 3x3 conv on 768-ch concat; "slim" = 32-ch bottleneck
     v12_eval_half: bool = True                          # also score ColonDB/ETIS/PolypGen with fp16 weights (deploy precision)
     v12_dw_blocks: int = 0                              # A: replace attention in this many ViT blocks by DW conv
