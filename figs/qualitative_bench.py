@@ -6,7 +6,7 @@
 Frames are drawn at random (fixed generator, not curated): two from each primary cohort among the frames for which every
 shown model's seed-42 prediction masks were saved. Predictions are the binary 352x352 masks the benchmark dumped at
 threshold 0.5; the printed Dice is the per-image Dice the evaluator logged at native resolution for the same seed.
-Polyp-PVT is not shown because its prediction masks were not retained.
+Polyp-PVT's prediction masks were not retained, so its row is a strip with the per-image Dice it logged for seed 42.
 """
 
 import glob
@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from orx_figstyle import PALETTE, WIDE, use_style  # noqa: E402
 
 RUNS = Path("~/.local/share/openresearch").expanduser()
+DICE_ONLY = ("Polyp-PVT", "48489f3c")      # masks not retained: show the logged per-image Dice only
 MODELS = [("PraNet", "2709562b", "pranet"), ("PraNet-V2", "e733ff21", "pranet_v2"), ("SegDINO", "5fa721d1", "segdino"),
           ("DANG (ours)", "842016dd", "dang")]
 COHORTS = [("CVC-ColonDB", "ColonDB"), ("ETIS-LaribPolypDB", "ETIS"), ("PolypGen", "PolypGen")]
@@ -98,15 +99,26 @@ def main():
     src = source_images()
 
     rows = ["Input + ground truth"] + [name for name, _, _ in MODELS]
-    fig, axes = plt.subplots(len(rows), len(picks), figsize=(WIDE, WIDE * len(rows) / len(picks) * 0.93 + 0.2))
+    rows.insert(rows.index("PraNet-V2") + 1, DICE_ONLY[0])
+    dice[DICE_ONLY[0]] = logged_dice(DICE_ONLY[1])
+    ratios = [0.2 if r == DICE_ONLY[0] else 1.0 for r in rows]
+    fig, axes = plt.subplots(len(rows), len(picks), figsize=(WIDE, WIDE * sum(ratios) / len(picks) * 0.93 + 0.2),
+                             gridspec_kw={"height_ratios": ratios})
     fig.subplots_adjust(left=0.085, right=0.995, top=0.955, bottom=0.005, wspace=0.03, hspace=0.04)
     for j, (short, uid) in enumerate(picks):
         img = load_rgb(src[uid][0])
         gt = load_mask(src[uid][1])
         for i, row in enumerate(rows):
             ax = axes[i, j]
-            ax.imshow(img, interpolation="bilinear")
-            if i == 0:
+            if row == DICE_ONLY[0]:
+                ax.text(0.5, 0.5, f"Dice {dice[row][uid]:.0f}", transform=ax.transAxes, ha="center", va="center",
+                        fontsize=6.5, fontweight="bold", color="black")
+                ax.set_facecolor("#f2f2f2")
+            else:
+                ax.imshow(img, interpolation="bilinear")
+            if row == DICE_ONLY[0]:
+                pass
+            elif i == 0:
                 contour(ax, gt, PALETTE["orange"])
             else:
                 z, members = zips[row]
@@ -127,7 +139,10 @@ def main():
                 ax.set_xlabel(short, fontsize=7)
                 ax.xaxis.set_label_position("top")
             if j == 0:
-                ax.set_ylabel(row.replace(" + ", " +\n"), fontsize=6.5, rotation=90, labelpad=3)
+                if row == DICE_ONLY[0]:
+                    ax.set_ylabel("Polyp-PVT\n(no mask)", fontsize=5.5, rotation=0, labelpad=3, ha="right", va="center")
+                else:
+                    ax.set_ylabel(row.replace(" + ", " +\n"), fontsize=6.5, rotation=90, labelpad=3)
     # a photo grid: a 300-dpi JPEG keeps the paper small (a vector PDF of 24 photos is ~8 MB)
     out = Path(__file__).with_name("qualitative_bench")
     fig.savefig(out.with_suffix(".png"), dpi=300)

@@ -220,7 +220,7 @@ Inference cost is measured for all models in one process on one NVIDIA T4 at bat
 \begin{figure*}[!t]
   \centering
   \includegraphics[width=\linewidth]{../figs/qualitative_bench.jpg}
-  \caption{\textbf{Predictions on the primary cohorts, drawn at random.} Two frames per cohort, chosen by a fixed random generator among all frames (not curated); seed $42$ of each model. Orange contour: ground truth; blue fill: prediction at threshold $0.5$; number: per-image Dice (\%) at native resolution. Polyp-PVT is not shown because its prediction masks were not retained.}
+  \caption{\textbf{Predictions on the primary cohorts, drawn at random.} Two frames per cohort, chosen by a fixed random generator among all frames (not curated); seed $42$ of each model. Orange contour: ground truth; blue fill: prediction at threshold $0.5$; number: per-image Dice (\%) at native resolution. Polyp-PVT's prediction masks were not retained; its strip gives the per-image Dice it logged for the same frames and seed.}
   \label{fig:qual}
 \end{figure*}
 
@@ -257,7 +257,7 @@ SegDINO, which uses the same frozen encoder with a light decoder, stays far belo
 
 \paragraph{Per centre.} Figure~\ref{fig:centre}a splits PolypGen by centre. DANG has the highest mean Dice on all six centres. Its margin over the best retrained model is $0.5$--$2.3$ points on Paris, Padova, Aviano and Alexandria and $6.1$ and $8.9$ points on Oslo and Oxford, the two centres on which every retrained model stays below $66\%$. On PolypDB (Figure~\ref{fig:centre}b), DANG is the best model on five of the six groups. Its gains are largest on the two virtual-chromoendoscopy modalities absent from training, narrow-band imaging ($83.8$ against $75.8\%$ for Polyp-PVT) and blue-light imaging ($81.8$ against $74.3\%$); on the $30$ Swedish white-light frames it is $0.9$ points below Polyp-PVT.
 
-\paragraph{Examples.} Figure~\ref{fig:qual} shows six frames drawn at random from the primary cohorts. Five are segmented well by PraNet, PraNet-V2 and DANG, while SegDINO adds scattered false positives on most of them (Dice $67$--$89\%$). On the second ETIS frame PraNet finds only a fragment of the lesion (Dice $3\%$), PraNet-V2 adds large false positives on the surrounding folds ($49\%$) and SegDINO reaches $12\%$, while DANG reaches $86\%$.
+\paragraph{Examples.} Figure~\ref{fig:qual} shows six frames drawn at random from the primary cohorts. Five are segmented well by PraNet, PraNet-V2, Polyp-PVT and DANG, while SegDINO adds scattered false positives on most of them (Dice $67$--$89\%$). On the second ETIS frame PraNet finds only a fragment of the lesion (Dice $3\%$), PraNet-V2 adds large false positives on the surrounding folds ($49\%$) and SegDINO reaches $12\%$, while Polyp-PVT and DANG reach $85$ and $86\%$.
 
 \paragraph{Statistical tests.} Table~\ref{tab:stats} gives the paired tests on the primary cohorts. On ETIS and PolypGen, DANG is better than every retrained model at the seed and the image level after Holm correction; against Polyp-PVT the seed-level adjusted $p$-values are $0.007$ and $0.031$, and DANG is better on $123$ of $196$ ETIS images (worse on $70$) and on $746$ of $1{,}399$ PolypGen frames (worse on $647$). On ColonDB, DANG is better than PraNet, PraNet-V2 and SegDINO, and statistically indistinguishable from Polyp-PVT at both levels (adjusted $p=0.72$ and $0.99$; $187$ images better, $191$ worse).
 
