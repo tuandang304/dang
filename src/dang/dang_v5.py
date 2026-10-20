@@ -467,7 +467,10 @@ class DANGv5(nn.Module):
         if tuple(getattr(cfg, "v12_dw_fixed", ())):   # latency benchmark only: fixed blocks, no data needed
             self.apply_dw(tuple(cfg.v12_dw_fixed))
 
-        self.proto_head = DualPrototypeMarginHead(dim=dim, proto_dim=cfg.proto_dim, num_prototypes=cfg.num_prototypes)
+        # ablation switch: v12_proto=False removes the prototype head, its logit term and its loss (sad decoder only)
+        self.use_proto = bool(getattr(cfg, "v12_proto", True))
+        self.proto_head = (DualPrototypeMarginHead(dim=dim, proto_dim=cfg.proto_dim, num_prototypes=cfg.num_prototypes)
+                           if self.use_proto else None)
 
         # round 2: decoding stack on the token pyramid ("dual" = V12-b) and the PASSE logit envelope
         self.decoder = getattr(cfg, "v12_decoder", "dual")
@@ -546,7 +549,7 @@ class DANGv5(nn.Module):
         H, W = x.shape[-2:]
         if self.trunk == "tpa":
             sem = self._semantic(x)
-            proto_logits, _ = self.proto_head(sem, gt_mask=gt_mask)
+            proto_logits = self.proto_head(sem, gt_mask=gt_mask)[0] if self.use_proto else None
             loc = self.pyramid(sem, H, W)                                     # s4, s8, s16, s32 from tokens only
         elif self.trunk == "vit":
             loc = [proj(f) for proj, f in zip(self.loc_projs, self.stem(x))]  # s4, s8
@@ -581,7 +584,9 @@ class DANGv5(nn.Module):
         up = lambda t: F.interpolate(t.float(), size=(H, W), mode="bilinear", align_corners=False)
         if self.decoder == "sad":
             y, aux = self.sad(loc)
-            z = y.float() + 0.2 * F.interpolate(proto_logits.float(), size=y.shape[-2:], mode="bilinear", align_corners=False)
+            z = y.float()
+            if proto_logits is not None:
+                z = z + 0.2 * F.interpolate(proto_logits.float(), size=y.shape[-2:], mode="bilinear", align_corners=False)
             return {"logits": up(z), "aux_logits": [up(a) for a in aux], "bg_logits": None, "boundary_logits": None,
                     "proto_logits": proto_logits}
         if self.decoder == "query":

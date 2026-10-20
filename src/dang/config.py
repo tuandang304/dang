@@ -4,7 +4,7 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "r2b_v12b_sad_decoder_seed42"
+    variant_name: str = "a1_r2b_no_proto_5seed"
     seed: int = 42
     # External SOTA selector (dang/sota.py) and loss: "shared" = Eq. (9) of the paper, "official" = method's own loss
     arch: str = "dang_v5"
@@ -16,7 +16,7 @@ class ExperimentConfig:
     # SOTA benchmark (dang/bench): "dang" = Kvasir stress protocol above; "bench" = PraNet split + PolypGen + PolypDB
     protocol: str = "bench"
     bench_model: str = "dang"                     # "" = data audit only | "pranet" | "polyp_pvt" | "pranet_v2" | "dang"
-    bench_seeds: tuple[int, ...] = (42,)
+    bench_seeds: tuple[int, ...] = (42, 43, 44, 45, 46)
     bench_polypdb: bool = False                # PolypDB is a final-test cohort: off for DANG screening runs
     bench_dump_seed: int | None = 42          # binary 352x352 prediction masks for this seed (paper figures)
     bench_dang_epochs: int = 20
@@ -45,6 +45,7 @@ class ExperimentConfig:
     v12_trunk: str = "tpa"                             # "dual" = V8-b; "vit" = frozen ViT trunk + shallow conv stem
     v12_head: str = "v8b"                               # "v8b" = 3x3 conv on 768-ch concat; "slim" = 32-ch bottleneck
     v12_decoder: str = "sad"                            # round 2: "dual" = V12-b dual decoder + 768-ch head; "sad"; "query"
+    v12_proto: bool = False                             # ablation A1: no dual-prototype margin head
     v12_passe: bool = False                             # round 2: PASSE logit envelope on the final logits (V12-b: True)
     v12_eval_half: bool = True                          # also score ColonDB/ETIS/PolypGen with fp16 weights (deploy precision)
     v12_dw_blocks: int = 0                              # A: replace attention in this many ViT blocks by DW conv
