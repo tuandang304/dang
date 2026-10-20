@@ -4,7 +4,7 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "d0m_v8b_a100_seed42"
+    variant_name: str = "v12l_deploy_bench_t4"
     seed: int = 42
     # External SOTA selector (dang/sota.py) and loss: "shared" = Eq. (9) of the paper, "official" = method's own loss
     arch: str = "dang_v5"
@@ -48,7 +48,7 @@ class ExperimentConfig:
     v12_dw_blocks: int = 0                              # A: replace attention in this many ViT blocks by DW conv
     v12_dw_samples: int = 64                            # training images for the Sigma_b block-selection statistic
     v12_dw_fixed: tuple[int, ...] = ()                  # latency benchmark only: fixed DW blocks (no data)
-    bench_only: bool = False                            # run dang.deploy_bench (no data, no training) and exit
+    bench_only: bool = True                            # run dang.deploy_bench (no data, no training) and exit
 
     # Architecture knobs
     cnn_backbone: str = "convnext_tiny.fb_in22k_ft_in1k_384"
