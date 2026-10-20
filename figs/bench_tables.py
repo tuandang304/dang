@@ -21,8 +21,7 @@ NA = "--"
 
 # display name, group key, trainable params (M; all weights are trained in the published models)
 MAIN = [("PraNet~\\cite{fan2020pranet}", "PraNet", None), ("Polyp-PVT~\\cite{dong2021polyp}", "Polyp-PVT", None),
-        ("PraNet-V2~\\cite{hu2026pranetv2}", "PraNet-V2", None), ("SegDINO~\\cite{yang2025segdino}", "SegDINO", 2.48),
-        ("\\textbf{DANG (ours)}", "DANG", 1.94)]
+        ("PraNet-V2~\\cite{hu2026pranetv2}", "PraNet-V2", None), ("\\textbf{DANG (ours)}", "DANG", 1.94)]
 DEPLOY_NAME = {"PraNet": "PraNet (Res2Net-50)", "Polyp-PVT": "Polyp-PVT (PVTv2-B2)", "PraNet-V2": "PraNet-V2 (PVTv2-B2)",
                "DANG": ["DANG (R2-b): token pyramid, SAD", "DANG (R2-b, selected): token pyramid + SAD"], "V8-b": "V8-b: dual stream, fg/bg decoder, PASSE",
                "V12-b": "V12-b: token pyramid, fg/bg decoder, PASSE", "R2-a": "R2-a: token pyramid, fg/bg decoder, no PASSE",
@@ -40,7 +39,7 @@ PUBLISHED = [("PraNet (published)~\\cite{fan2020pranet}", [89.8, 89.9, 70.9, 62.
              ("Polyp-PVT (published)$^{\\ddagger}$~\\cite{dong2021polyp}", [91.7, 93.7, 80.8, 78.7, 90.0])]
 
 
-INTERIM = ("DANG", "V12-b", "R2-c")   # five-seed runs still landing: show the seeds so far, marked with a dagger
+INTERIM = ()   # groups whose five-seed runs are still landing (shown with a dagger); none left
 
 
 def cell(group, cohort, metric="dice", need=5, bold=False, mark=""):
@@ -100,44 +99,26 @@ def toolbox_rows():
     return out
 
 
-ABLATION = [("Dual stream: ConvNeXt-T + ViT-S, fg/bg decoder, PASSE", "V8-b"),
-            ("Token pyramid only, fg/bg decoder, PASSE", "V12-b"),
-            ("\\quad without PASSE", "R2-a"),
-            ("Token pyramid, fg/bg query decoder", "R2-c"),
-            ("\\textbf{DANG}: token pyramid, scale-aware decoder", "DANG")]
+ABLATION = [("fg/bg decoder + PASSE", "V12-b"),
+            ("fg/bg query decoder", "R2-c"),
+            ("\\textbf{DANG}: scale-aware decoder", "DANG")]
 
 
 def ablation_rows():
+    """Five-seed decoder comparison on the same token pyramid (single-seed variants are not reported)."""
     six = COHORTS[:6]
+    bests = {c: best([k for _, k in ABLATION], c) for c in six}
     out = []
-    for need, label in ((1, "Seed 42"), (5, "Five seeds")):
-        rows = ABLATION if need == 1 else [r for r in ABLATION if r[1] in ("V12-b", "R2-c", "DANG")]
-        keys = [k for _, k in rows]
-        bests = {c: best(keys, c, need=need) for c in six}
-        out.append(f"\\multicolumn{{9}}{{@{{}}l}}{{\\textit{{{label}}}}} \\\\")
-        for name, k in rows:
-            dep = deploy(k)
-            params = G.get(k, {}).get("params_m")
-            ms = dep.get("graph_half_bs1_ms")
-            cells = []
-            for c in six:
-                g = G.get(k, {}).get("cohorts", {}).get(c, {}).get("dice")
-                if g is not None and need == 5 and 1 < g["n"] < 5 and k in INTERIM:
-                    cells.append(f"${g['mean']:.1f}^{{\\dagger}}$")
-                    continue
-                if g is None or g["n"] < need:
-                    cells.append(NA)
-                    continue
-                v = f"{(g['seeds'][0] if need == 1 else g['mean']):.1f}"
-                cells.append(f"$\\mathbf{{{v}}}$" if bests[c] == k else f"${v}$")
-            out.append(f"{name} & {fmt(params)} & {fmt(ms, 1)} & " + " & ".join(cells) + " \\\\")
-        if need == 1:
-            out.append("\\midrule")
+    for name, k in ABLATION:
+        dep = deploy(k)
+        cells = [cell(k, c, bold=(bests[c] == k)) for c in six]
+        out.append(f"{name} & {fmt(G.get(k, {}).get('params_m'))} & {fmt(dep.get('gmacs'))} & "
+                   f"{fmt(dep.get('graph_half_bs1_ms'))} & " + " & ".join(cells) + " \\\\")
     return out
 
 
 def stats_rows():
-    names = {"PraNet": "PraNet", "Polyp-PVT": "Polyp-PVT", "PraNet-V2": "PraNet-V2", "SegDINO": "SegDINO"}
+    names = {"PraNet": "PraNet", "Polyp-PVT": "Polyp-PVT", "PraNet-V2": "PraNet-V2"}
     out = []
     for b, nm in names.items():
         cells = []
@@ -153,9 +134,8 @@ def stats_rows():
 
 
 def eff_rows():
-    rows = [("PraNet", "PraNet"), ("Polyp-PVT", "Polyp-PVT"), ("PraNet-V2", "PraNet-V2"), ("SegDINO", "SegDINO"),
-            ("\\textbf{DANG (ours)}", "DANG")]
-    trainable = {"SegDINO": 2.48, "DANG": 1.94}
+    rows = [("PraNet", "PraNet"), ("Polyp-PVT", "Polyp-PVT"), ("PraNet-V2", "PraNet-V2"), ("\\textbf{DANG (ours)}", "DANG")]
+    trainable = {"DANG": 1.94}
     out = []
     for name, k in rows:
         d = deploy(k)

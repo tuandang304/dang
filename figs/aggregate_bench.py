@@ -33,9 +33,9 @@ GROUPS = {
     "V12-b": ["fb86a0e1", "8f89680e"],
     "R2-a": ["dcfac57f"],
     "R2-c": ["28d364fe", "77e8b315"],
-    "DANG": ["842016dd", "9963f524"],                                   # R2-b, the selected model
+    "DANG": ["842016dd", "9963f524", "7e80a4ed"],                       # R2-b, the selected model; E1 adds PolypDB
 }
-DEPLOY_RUNS = ["55037939"]                     # one-host T4 latency benchmark of every model in the paper
+DEPLOY_RUNS = ["55037939", "73f86fbe"]         # one-host T4 latency (D3, then D4 which also times the query decoder; later wins)
 BASELINES = ["PraNet", "Polyp-PVT", "PraNet-V2", "SegDINO", "V12-b", "R2-c"]   # last two: five-seed ablation variants
 COHORTS = ["Kvasir", "CVC-ClinicDB", "CVC-ColonDB", "ETIS-LaribPolypDB", "CVC-300", "PolypGen", "PolypDB"]
 PRIMARY = ["CVC-ColonDB", "ETIS-LaribPolypDB", "PolypGen"]
@@ -86,6 +86,11 @@ def load(prefixes):
             if s not in seeds:
                 seeds[s] = summ
                 images[s] = run_imgs.get(s, {})
+            else:                                       # evaluation-only runs add cohorts the training run skipped
+                for c, v in summ["cohorts"].items():
+                    if c not in seeds[s]["cohorts"]:
+                        seeds[s]["cohorts"][c] = v
+                        images[s][c] = run_imgs.get(s, {}).get(c, {})
     return seeds, images
 
 
@@ -117,6 +122,11 @@ def main():
             if have:
                 entry["cohorts"][c] = {k: describe([seeds[s]["cohorts"][c]["micro"][v] for s in have])
                                        for k, v in METRICS.items()}
+                doms = sorted(set.intersection(*[set(seeds[s]["cohorts"][c].get("per_domain", {})) for s in have]))
+                if len(doms) > 1:                       # multi-centre cohorts: Dice per centre / modality group
+                    entry["cohorts"][c]["per_domain"] = {
+                        d: dict(describe([seeds[s]["cohorts"][c]["per_domain"][d]["dice_native"] for s in have]),
+                                n_images=seeds[have[0]]["cohorts"][c]["per_domain"][d]["n"]) for d in doms}
         out["groups"][g] = entry
 
     d_seeds, d_imgs = data["DANG"]

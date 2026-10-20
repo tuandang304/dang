@@ -47,38 +47,35 @@
 \begin{document}
 \begin{tikzpicture}[orx]
 
-  % ---------------- input and stem
+  % ---------------- trunk (middle row)
   \node[img] (input) {\includegraphics[width=12.5mm]{arch_input.png}};
-  % ---------------- input and frozen encoder
-  \node[img] (input) {\includegraphics[width=12.5mm]{arch_input.png}};
-  \node[sub, below=0.6mm of input] {$I\in\mathbb{R}^{3\times352^2}$};
-  \node[frozenblk, right=8mm of input, text width=21mm, minimum height=22mm] (vit)
-       {DINOv3\\ViT-S/16 \frozen\\[2pt]{\scriptsize + Conv-LoRA}\\[-1pt]{\scriptsize in all 12 blocks}\\[-1pt]{\scriptsize (rank 16, trained)}};
-  \node[block, right=12mm of vit, text width=16mm, minimum height=22mm] (proj)
-       {Multi-depth\\readout\\[2pt]{\scriptsize $1{\times}1$ conv}\\[-1pt]{\scriptsize to $192$ ch.}};
+  \node[sub, below=0.6mm of input] {$I$, $352\times352$};
+  \node[frozenblk, right=8mm of input, text width=17mm, minimum height=21mm] (vit)
+       {DINOv3\\ViT-S/16 \frozen\\[2pt]{\scriptsize + Conv-LoRA}\\[-1pt]{\scriptsize in all 12 blocks}};
+  \node[block, right=11mm of vit, text width=14mm, minimum height=21mm] (proj)
+       {Token\\readout\\[2pt]{\scriptsize blocks}\\[-1pt]{\scriptsize 3, 6, 9, 12}};
+  \coordinate (fork) at ($(proj.east)+(3mm,0)$);
 
-  % ---------------- decoding path (top) and prototype path (bottom)
-  \node[block, text width=19mm] (pyr) at ($(proj.east)+(27mm,12mm)$)
-       {Token pyramid\\[-0.5pt]{\scriptsize one depth per stride}};
-  \node[block, right=7mm of pyr, text width=21mm] (sad)
-       {Scale-aware\\decoder\\[-0.5pt]{\scriptsize residual DW + top-down}};
-  \node[ours, text width=21mm, minimum height=12mm] (proto) at ($(proj.east)+(27mm,-12mm)$)
-       {Dual-prototype\\margin head\\[-0.5pt]{\scriptsize prototypes, anchors,}\\[-1pt]{\scriptsize self-support}};
-  \node[sumnode] (sum) at ($(sad.east)+(8mm,-12mm)$) {$+$};
-  \node[img, right=9mm of sum] (out) {\includegraphics[width=12.5mm]{arch_output.png}};
+  % ---------------- decoding branch (top) and prototype branch (bottom)
+  \node[block, text width=17mm, anchor=west] (pyr) at ($(fork)+(20mm,14mm)$)
+       {Token\\pyramid};
+  \node[block, right=10mm of pyr, text width=18mm] (sad) {Scale-aware\\decoder};
+  \node[ours, text width=21mm, anchor=west, minimum height=11mm] (proto) at ($(fork)+(20mm,-14mm)$)
+       {Dual-prototype\\margin head};
+  \node[sumnode] (sum) at ($(sad.east)+(10mm,-14mm)$) {$+$};
+  \node[img, right=10mm of sum] (out) {\includegraphics[width=12.5mm]{arch_output.png}};
   \node[sub, below=0.6mm of out] {$\hat Y=\sigma(Z)$};
 
-  % ---------------- edges
-  \draw[flow] (input) -- node[edgelbl, above] {$448^2$} (vit);
-  \draw[flow] (vit) -- node[edgelbl, above] {$384{\times}28^2$} (proj);
-  \draw[flow] (proj.east) -- ++(5mm,0) coordinate (fork) |- node[edgelbl, pos=0.68, above] {$T_3,T_6,T_9,T_{12}$} (pyr.west);
-  \draw[flow] (fork) |- node[edgelbl, pos=0.68, above] {$T_6,T_9,T_{12}$} (proto.west);
-  \draw[flow] (pyr) -- node[edgelbl, above] {$s_4$--$s_{32}$} (sad);
-  \node[edgelbl, below=0.3mm of proto.south] {$\pi_{\mathrm{proto}}$ on the $28{\times}28$ grid};
-  \draw[flow] (sad.east) -| node[edgelbl, pos=0.7, left] {$Z_{\mathrm{SAD}}$} (sum.north);
-  \draw[flow] (proto.east) -| node[edgelbl, pos=0.3, above] {$0.2\,\pi_{\mathrm{proto}}$, upsampled} (sum.south);
-  \draw[flow] (sum) -- node[edgelbl, above] {$\uparrow352^2$} (out);
-  \draw[cond] ($(sad.north east)+(-4mm,0)$) -- ++(0,3.5mm) node[edgelbl, anchor=south, text=orxblue!90!black] {deep supervision at $s_8$--$s_{32}$};
+  % ---------------- edges (labels sit above horizontal segments, clear of every line)
+  \draw[flow] (input) -- node[edgelbl, above=0.6mm] {$448^2$} (vit);
+  \draw[flow] (vit) -- node[edgelbl, above=0.6mm] {$28{\times}28$} (proj);
+  \draw[flow] (proj.east) -- (fork) |- node[edgelbl, pos=0.72, above=0.6mm] {$T_3,T_6,T_9,T_{12}$} (pyr.west);
+  \draw[flow] (fork) |- node[edgelbl, pos=0.72, above=0.6mm] {$T_6,T_9,T_{12}$} (proto.west);
+  \draw[flow] (pyr) -- node[edgelbl, above=0.6mm] {$s_4$--$s_{32}$} (sad);
+  \draw[flow] (sad.east) -| node[edgelbl, pos=0.3, above=0.6mm] {$Z_{\mathrm{SAD}}$} (sum.north);
+  \draw[flow] (proto.east) -| node[edgelbl, pos=0.3, above=0.6mm] {$0.2\,\pi_{\mathrm{proto}}$} (sum.south);
+  \draw[flow] (sum) -- node[edgelbl, above=0.6mm] {$\uparrow352^2$} (out);
+  \draw[cond] (sad.north) -- ++(0,4mm) node[edgelbl, anchor=south, text=orxblue!90!black, inner sep=0.8pt] {aux.\ heads $s_8$--$s_{32}$};
 
   % ---------------- legend
   \node[anchor=north east, font=\sffamily\scriptsize, text=black!65, inner sep=0pt] at ($(out.east |- proto.south)+(0,-1mm)$)
