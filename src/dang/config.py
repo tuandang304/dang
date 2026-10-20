@@ -50,6 +50,7 @@ class ExperimentConfig:
     v12_dw_blocks: int = 0                              # A: replace attention in this many ViT blocks by DW conv
     v12_dw_samples: int = 64                            # training images for the Sigma_b block-selection statistic
     v12_dw_fixed: tuple[int, ...] = ()                  # latency benchmark only: fixed DW blocks (no data)
+    v12_cache_rope: bool = False                        # V12-L2: build the DINOv3 RoPE table once (CUDA-graph capture); off = R2-b as trained
     bench_only: bool = False                            # run dang.deploy_bench (no data, no training) and exit
 
     # Architecture knobs
