@@ -4,7 +4,7 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "sb4_asgnet_official_s42"
+    variant_name: str = "sb5_segdino_official_s42_46"
     seed: int = 42
     # External SOTA selector (dang/sota.py) and loss: "shared" = Eq. (9) of the paper, "official" = method's own loss
     arch: str = "dang_v5"
@@ -15,12 +15,12 @@ class ExperimentConfig:
 
     # SOTA benchmark (dang/bench): "dang" = Kvasir stress protocol above; "bench" = PraNet split + PolypGen + PolypDB
     protocol: str = "bench"
-    bench_model: str = "asgnet"               # "" = data audit only | "pranet" | "polyp_pvt" | "pranet_v2" | "asgnet" | "dang"
-    bench_seeds: tuple[int, ...] = (42,)
+    bench_model: str = "segdino"              # "" = data audit only | "pranet" | "polyp_pvt" | "pranet_v2" | "asgnet" | "segdino" | "dang"
+    bench_seeds: tuple[int, ...] = (42, 43, 44, 45, 46)
     bench_polypdb: bool = True                # PolypDB is a final-test cohort: off for DANG screening runs
     bench_dump_seed: int | None = 42          # binary 352x352 prediction masks for this seed (paper figures)
     bench_dang_epochs: int = 20
-    bench_num_workers: int = 8                 # ASGNet get_loader(num_workers=8); CPU-heavy augmentation
+    bench_num_workers: int = 2
 
     # Stress-test S1 (5% Few-Shot Kvasir = 40 images) + Full 100% (800 images)
     run_s1_10pct: bool = True

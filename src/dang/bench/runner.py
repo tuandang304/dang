@@ -2,7 +2,7 @@
 
 cfg.bench_model == ""         build and audit the cohorts only (no GPU work)
 cfg.bench_model in RECIPES    train with the official recipe (dang/bench/recipes.py), fp32, final-epoch weights
-                              ("pranet" | "polyp_pvt" | "pranet_v2" | "asgnet")
+                              ("pranet" | "polyp_pvt" | "pranet_v2" | "asgnet" | "segdino")
 cfg.bench_model == "dang"     train the configured DANG model with its own recipe, final EMA weights (no val split)
 
 Seeds are spread over all visible GPUs (one forked worker per GPU, e.g. Kaggle's 2x T4).
@@ -71,6 +71,7 @@ def run_one_seed(cfg, seed: int, data: dict, gpu_tag: str) -> dict:
         model = recipe.build().to(device)
         model = (recipe.train or train_official)(recipe, model, data["train"], device, log, num_workers=nw)
         logits_fn, amp_dtype = recipe.test_logits, None                     # official code runs fp32
+        eval_size = recipe.eval_size
     elif cfg.bench_model == "dang":
         from torch.utils.data import DataLoader
         from dang.data import MedicalSegDataset
@@ -90,6 +91,7 @@ def run_one_seed(cfg, seed: int, data: dict, gpu_tag: str) -> dict:
                                             use_scaler=use_scaler, epochs=cfg.bench_dang_epochs,
                                             warmup_epochs=cfg.warmup_epochs, tag=f"{gpu_tag} DANG seed {seed}")
         logits_fn = lambda out: out["logits"]
+        eval_size = 352
     else:
         raise ValueError(f"unknown bench_model {cfg.bench_model!r}")
     train_min = (time.time() - t0) / 60.0
@@ -109,7 +111,7 @@ def run_one_seed(cfg, seed: int, data: dict, gpu_tag: str) -> dict:
         te = time.time()
         recs = evaluate_cohort(model, samples, logits_fn, device, amp_dtype=amp_dtype,
                                dump=(dump_zip, cohort) if dump_zip is not None else None,
-                               num_workers=nw)
+                               num_workers=nw, img_size=eval_size)
         summ = summarize(recs)
         summary["cohorts"][cohort] = summ
         m = summ["macro"]

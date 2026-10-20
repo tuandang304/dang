@@ -44,8 +44,9 @@ def _native_scores(pred: np.ndarray, gt: np.ndarray) -> dict:
 
 
 @torch.no_grad()
-def evaluate_cohort(model, samples, logits_fn, device, amp_dtype=None, dump=None, batch_size=16, num_workers=2):
-    loader = DataLoader(MedicalSegDataset(samples, img_size=352, is_train=False), batch_size=batch_size,
+def evaluate_cohort(model, samples, logits_fn, device, amp_dtype=None, dump=None, batch_size=16, num_workers=2,
+                    img_size=352):
+    loader = DataLoader(MedicalSegDataset(samples, img_size=img_size, is_train=False), batch_size=batch_size,
                         shuffle=False, num_workers=num_workers, pin_memory=True)
     by_uid = {s["uid"]: s for s in samples}
     model.eval()

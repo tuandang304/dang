@@ -8,6 +8,9 @@ Sources (commits in dang/bench/official/PROVENANCE.md):
              Adam 1e-4, batch 40, clip 0.5, adjust_lr(.., 0.1, 80) followed by CosineAnnealingLR(T_max=20).step() each
              epoch, single scale, flip/crop/rotate/colour/pepper augmentation, edge maps from utils/edge_util.py,
              structure + dice-edge + UAL losses. --epoch 120 (119 epochs): the paper's 120 epochs, not the script's 80.
+  SegDINO    train_segdino.py + dataset.py (own loop, `train_segdino` below): DINOv3 ViT-S/16 FROZEN as the paper states
+             (the released script never calls lock_backbone), DPT head (layers 2/5/8/11, 128 features), AdamW 1e-4 /
+             wd 1e-4, BCE-with-logits, 50 epochs, batch 4, 256x256, no augmentation; evaluated at 256.
 PraNet / Polyp-PVT / PraNet-V2: 352x352 Resize-only data pipeline (no augmentation), multi-scale {0.75, 1, 1.25} with one optimiser step
 per scale, fp32, and the authors' structure losses copied verbatim (including PraNet's legacy `reduce='none'`).
 Deliberate deviations, identical for every model: the final-epoch weights are evaluated (Polyp-PVT and PraNet-V2
@@ -180,6 +183,7 @@ class Recipe:
     size_rates: tuple = (0.75, 1, 1.25)
     trainsize: int = 352
     train: Callable | None = None   # own training loop; None = train_official
+    eval_size: int = 352            # shared evaluator input size (the model's own test resolution)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -444,6 +448,113 @@ def train_asgnet(recipe, model, train_samples, device, log, num_workers: int = 2
     return model
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# SegDINO (github.com/script-Yang/segdino @c078ca0e): train_segdino.py + dataset.py, with the paper's frozen backbone
+# ---------------------------------------------------------------------------------------------------------------------
+DINOV3_VITS16_TIMM = "vit_small_patch16_dinov3.lvd1689m"
+
+
+class DINOv3IntermediateLayers(torch.nn.Module):
+    """DINOv3 ViT-S/16 (LVD-1689M weights, timm port) exposing the official DINOv3 `get_intermediate_layers(x, n)`
+    contract used by SegDINO's DPT: a tuple of final-norm'd patch tokens (B, N, C) for the block indices `n`."""
+
+    def __init__(self, name: str = DINOV3_VITS16_TIMM):
+        super().__init__()
+        import timm
+        self.model = timm.create_model(name, pretrained=True, dynamic_img_size=True)
+        self.embed_dim = self.model.embed_dim
+
+    def get_intermediate_layers(self, x, n):
+        feats = self.model.forward_intermediates(x, indices=list(n), norm=True, output_fmt="NLC",
+                                                 intermediates_only=True)
+        return tuple(feats)
+
+
+def build_segdino():
+    from dang.bench.official.segdino.dpt import DPT
+    model = DPT(nclass=1, backbone=DINOv3IntermediateLayers())   # train_segdino.py: DPT(nclass=1, backbone=backbone)
+    model.lock_backbone()                                       # paper: "the DINO backbone is frozen"
+    return model
+
+
+def segdino_test_logits(outputs):          # test_segdino.py: logits = model(inputs)
+    return outputs
+
+
+class SegDINOTrainDataset(torch.utils.data.Dataset):
+    """dataset.py FolderDataset + ResizeAndNormalize((256, 256)) over in-memory samples (cv2 decode, BGR->RGB,
+    bicubic+antialias image resize, nearest mask resize, binarise at 0.5)."""
+
+    def __init__(self, samples: list[dict], size=(256, 256), thr: float = 0.5):
+        self.samples = samples
+        self.size = size
+        self.thr = thr
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        import cv2
+        import torchvision.transforms.functional as TF
+        from torchvision.transforms import InterpolationMode
+        s = self.samples[idx]
+        img = cv2.imdecode(np.frombuffer(s["img_bytes"], np.uint8), cv2.IMREAD_COLOR)        # (H,W,3) BGR uint8
+        mask = cv2.imdecode(np.frombuffer(s["mask_bytes"], np.uint8), cv2.IMREAD_GRAYSCALE)  # (H,W) uint8
+        mask_hwc = mask[..., None]
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img_pil = Image.fromarray(img_rgb)
+        img_resized = TF.resize(img_pil, self.size, interpolation=InterpolationMode.BICUBIC, antialias=True)
+        img_t = TF.to_tensor(img_resized)
+        img_t = TF.normalize(img_t, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+        H, W = self.size
+        mask_ts = []
+        for c in range(mask_hwc.shape[2]):
+            m = Image.fromarray(mask_hwc[..., c])
+            m = TF.resize(m, (H, W), interpolation=InterpolationMode.NEAREST)
+            mask_ts.append(TF.to_tensor(m)[0])
+        mask_t = torch.stack(mask_ts, dim=0).float()
+        mask_t = (mask_t > self.thr).float()
+        if mask_t.max().item() < 1.0:
+            mask_t = (mask_t > 0).float()
+        return img_t, mask_t
+
+
+def train_segdino(recipe, model, train_samples, device, log, num_workers: int = 2):
+    """train_segdino.py main() + train_one_epoch(): AdamW over the trainable (decoder) parameters, BCE-with-logits,
+    shuffle + drop_last. The per-epoch evaluate() on the test split only picks the best checkpoint and is replaced by
+    the final-epoch weights."""
+    import time
+    import torch.nn as nn
+    ds = SegDINOTrainDataset(train_samples, (recipe.trainsize, recipe.trainsize))
+    loader = torch.utils.data.DataLoader(ds, batch_size=recipe.batch_size, shuffle=True, num_workers=num_workers,
+                                         drop_last=True)
+    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()),
+                                  lr=recipe.lr, weight_decay=recipe.weight_decay)
+    criterion = nn.BCEWithLogitsLoss()
+    n_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    log(f"official recipe {recipe.name}: AdamW lr={recipe.lr} wd={recipe.weight_decay} epochs={recipe.epoch_arg} "
+        f"batch={recipe.batch_size} input={recipe.trainsize} BCEWithLogits | trainable={n_train / 1e6:.3f}M "
+        f"(backbone frozen) | train_images={len(ds)} steps/epoch={len(loader)}")
+    for epoch in range(1, recipe.epoch_arg + 1):
+        t0 = time.time()
+        model.train()
+        total_loss = 0.0
+        for inputs, targets in loader:
+            inputs = inputs.to(device, non_blocking=True)
+            targets = targets.to(device, non_blocking=True)
+            optimizer.zero_grad()
+            logits = model(inputs)
+            loss = criterion(logits, targets)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        avg = total_loss / max(1, len(loader))
+        if not np.isfinite(avg):
+            raise FloatingPointError(f"non-finite training loss at epoch {epoch}")
+        log(f"Ep {epoch:03d}/{recipe.epoch_arg:03d} loss={avg:.4f} time={time.time() - t0:.1f}s")
+    return model
+
+
 RECIPES = {
     "pranet": Recipe("PraNet (Res2Net-50)", "arXiv:2006.11392", build_pranet, "Adam", 1e-4, 0.0,
                      20, 16, 0.5, 0.1, 50, pranet_loss, pranet_test_logits),
@@ -453,6 +564,10 @@ RECIPES = {
                         30, 8, 0.5, 0.1, 50, pranet_v2_loss, pranet_v2_test_logits),
     "asgnet": Recipe("ASGNet (PVTv2-B3)", "arXiv:2604.14755 / TCSVT 2026", build_asgnet, "Adam", 1e-4, 0.0,
                      120, 40, 0.5, 0.1, 80, None, asgnet_test_logits, size_rates=(1,), train=train_asgnet),
+    # epoch_arg = the paper's 50 epochs (loop range(1, epochs + 1)); clip / decay unused
+    "segdino": Recipe("SegDINO (frozen DINOv3 ViT-S/16 + light decoder)", "arXiv:2509.00833", build_segdino, "AdamW",
+                      1e-4, 1e-4, 50, 4, 0.0, 1.0, 10**9, None, segdino_test_logits, size_rates=(1,), trainsize=256,
+                      train=train_segdino, eval_size=256),
 }
 
 
