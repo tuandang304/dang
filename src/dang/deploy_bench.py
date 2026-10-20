@@ -28,7 +28,31 @@ VARIANTS = {   # every entry sets trunk, decoder and PASSE explicitly: the base 
     "PraNet (Res2Net-50)": {"arch": "pranet"},
     "Polyp-PVT (PVTv2-B2)": {"arch": "polyp_pvt"},
     "PraNet-V2 (PVTv2-B2)": {"arch": "pranet_v2"},
+    "SegDINO (DINOv3 ViT-S/16 + DPT head, 256x256)": {"_segdino": True, "img_size": 256},
 }
+
+
+class SegDINOBackbone(torch.nn.Module):
+    """SegDINO's DINOv3 contract (`get_intermediate_layers`, as in dang.bench.recipes on the SB5 branch), cached RoPE."""
+
+    def __init__(self):
+        super().__init__()
+        import timm
+        from dang.dang_v5 import CachedRope
+        self.model = timm.create_model("vit_small_patch16_dinov3.lvd1689m", pretrained=True, dynamic_img_size=True)
+        self.model.rope = CachedRope(self.model.rope)
+        self.embed_dim = self.model.embed_dim
+
+    def get_intermediate_layers(self, x, n):
+        return tuple(self.model.forward_intermediates(x, indices=list(n), norm=True, output_fmt="NLC",
+                                                      intermediates_only=True))
+
+
+def build_segdino():
+    from dang.bench.official.segdino.dpt import DPT
+    model = DPT(nclass=1, backbone=SegDINOBackbone())
+    model.lock_backbone()
+    return model
 
 
 class ViTFloor(torch.nn.Module):
@@ -77,7 +101,10 @@ def bench_one(name, overrides, base_cfg, build_model, device):
     for k, v in overrides.items():
         if not k.startswith("_"):
             setattr(cfg, k, v)
-    model = (ViTFloor(cfg) if overrides.get("_vit_floor") else build_model(cfg)).eval()
+    if overrides.get("_segdino"):
+        model = build_segdino().eval()
+    else:
+        model = (ViTFloor(cfg) if overrides.get("_vit_floor") else build_model(cfg)).eval()
     params = sum(p.numel() for p in model.parameters()) / 1e6
     s = cfg.img_size
     rec = {"model": name, "params_m": round(params, 2)}
