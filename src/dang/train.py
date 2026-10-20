@@ -44,6 +44,22 @@ def dump_pred_mask(dump, uid: str, pred_bin: np.ndarray) -> None:
     zf.writestr(f"{prefix}/{uid.replace('/', '__')}.png", buf.getvalue())
 
 
+def amplitude_mix(images: torch.Tensor, prob: float) -> torch.Tensor:
+    """FACT-style Fourier amplitude mix (Xu et al., CVPR 2021): keep each image's phase, linearly mix its amplitude
+    spectrum with that of a random other image in the batch (lambda ~ U(0, 1)); applied per image with prob `prob`."""
+    if prob <= 0 or images.shape[0] < 2:
+        return images
+    B = images.shape[0]
+    x = images.float()
+    f = torch.fft.fft2(x, dim=(-2, -1))
+    amp, pha = f.abs(), f.angle()
+    perm = torch.randperm(B, device=x.device)
+    lam = torch.rand(B, 1, 1, 1, device=x.device)
+    mixed = torch.fft.ifft2(torch.polar((1 - lam) * amp + lam * amp[perm], pha), dim=(-2, -1)).real
+    apply = (torch.rand(B, 1, 1, 1, device=x.device) < prob).to(x.dtype)
+    return (apply * mixed + (1 - apply) * x).to(images.dtype)
+
+
 def seed_everything(seed: int):
     random.seed(seed)
     np.random.seed(seed)
@@ -354,6 +370,7 @@ def measure_efficiency(model: nn.Module, cfg, device: torch.device, amp_dtype: t
             with torch.amp.autocast(device_type="cuda", dtype=amp_dtype):
                 _ = model(dummy)
         torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats(device)
         t0 = time.perf_counter()
         n_iters = 200
         for _ in range(n_iters):
@@ -362,8 +379,10 @@ def measure_efficiency(model: nn.Module, cfg, device: torch.device, amp_dtype: t
         torch.cuda.synchronize()
         elapsed = time.perf_counter() - t0
         fps = n_iters / elapsed
+        peak_mem_mb = torch.cuda.max_memory_allocated(device) / 2**20
     else:
         fps = 0.0
+        peak_mem_mb = 0.0
 
     random.setstate(py_state)
     np.random.set_state(np_state)
@@ -377,6 +396,9 @@ def measure_efficiency(model: nn.Module, cfg, device: torch.device, amp_dtype: t
         "frozen_params_m": round(frozen_params / 1e6, 3),
         "trainable_pct": round(100.0 * trainable_params / max(total_params, 1), 2),
         "fps": round(fps, 2),
+        "latency_ms_bs1": round(1000.0 / fps, 2) if fps > 0 else 0.0,
+        "peak_mem_mb_bs1": round(peak_mem_mb, 1),
+        "gpu_name": torch.cuda.get_device_name(device) if device.type == "cuda" else "cpu",
         "warmup_iters": 50,
         "timed_iters": 200,
     }
@@ -471,6 +493,7 @@ def train_and_select_best(
 
             images = batch["image"].to(device, non_blocking=True)
             masks = batch["mask"].to(device, non_blocking=True)
+            images = amplitude_mix(images, getattr(cfg, "amp_mix_prob", 0.0))
 
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(device_type=device.type, dtype=amp_dtype, enabled=(device.type == "cuda")):
@@ -498,6 +521,13 @@ def train_and_select_best(
             n_batches += 1
 
         train_loss = running_loss / max(1, n_batches)
+        if val_loader is None:  # no validation split (benchmark protocol): keep training, return the final EMA
+            print(f"[{tag} | Ep {epoch:02d}/{epochs:02d}] loss={train_loss:.4f} "
+                  f"| lr={max(pg['lr'] for pg in optimizer.param_groups):.2e} | time={time.time() - ep_t0:.1f}s",
+                  flush=True)
+            if not math.isfinite(train_loss):
+                raise FloatingPointError(f"non-finite training loss at epoch {epoch}")
+            continue
         val_raw = evaluate_loader(model, val_loader, device, amp_dtype=amp_dtype, full_metrics=False)
         val_ema = evaluate_loader(ema_model, val_loader, device, amp_dtype=amp_dtype, full_metrics=False)
 
@@ -526,6 +556,8 @@ def train_and_select_best(
             flush=True,
         )
 
+    if val_loader is None:
+        return ema_model, epochs, float("nan")
     if best_state is not None:
         model.load_state_dict(best_state)
     return model, best_epoch, best_val_dice
@@ -533,6 +565,9 @@ def train_and_select_best(
 
 def main():
     cfg = get_config()
+    if getattr(cfg, "protocol", "dang") == "bench":
+        from dang.bench.runner import main_bench
+        return main_bench(cfg)
     seeds = list(getattr(cfg, "seeds", (cfg.seed,)))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -692,7 +727,8 @@ def main():
             print(
                 f"Model Efficiency (50 warmup + 200 timed iters): Total={eff['total_params_m']:.2f}M | "
                 f"Trainable={eff['trainable_params_m']:.2f}M ({eff['trainable_pct']:.2f}%) | "
-                f"Frozen={eff['frozen_params_m']:.2f}M | Speed={eff['fps']:.2f} FPS",
+                f"Frozen={eff['frozen_params_m']:.2f}M | Speed={eff['fps']:.2f} FPS | "
+                f"bs1 latency={eff['latency_ms_bs1']:.2f}ms | peak mem={eff['peak_mem_mb_bs1']:.1f}MB | {eff['gpu_name']}",
                 flush=True,
             )
 
