@@ -243,11 +243,11 @@ Table~\ref{tab:main} compares DANG with the four retrained models.
 
 \paragraph{In domain and CVC-300.} On Kvasir DANG has the highest mean ($92.2\%$, $1.2$ points above Polyp-PVT), but it is better than Polyp-PVT on only $40$ of the $100$ images; the higher mean comes from a few frames on which Polyp-PVT fails. On ClinicDB it is $3.2$ points below Polyp-PVT and worse on $55$ of the $62$ images, a systematic deficit; a plausible reason, which we did not test, is that the fully fine-tuned encoders of the compared models fit the training centres more closely than a frozen encoder. On CVC-300 its mean is $1.0$ point below PraNet, although it is better on $40$ of the $60$ images.
 
-\paragraph{SegDINO.} SegDINO, which uses the same frozen encoder with a light decoder, stays far below every other model, at $51.5\%$ on ColonDB and $43.3\%$ on ETIS. It is trained at the $256\times256$ input of its paper and without adapters, so this gap mixes input resolution, adaptation and decoder; Section~\ref{sec:components} shows that DANG with a fully frozen encoder still exceeds it by $14.5$--$28.7$ points on the primary cohorts. We keep it as the reference for a frozen foundation model with a light head: DANG uses the same frozen weights and trains a comparable number of parameters ($1.9$M against $2.5$M).
+\paragraph{SegDINO.} SegDINO, which uses the same frozen encoder with a light decoder, stays far below every other model, at $51.5\%$ on ColonDB and $43.3\%$ on ETIS. It is trained at the $256\times256$ input of its paper and without adapters, so this gap mixes input resolution, adaptation and decoder; Section~\ref{sec:components} shows that DANG's token pyramid and decoder on the fully frozen encoder still exceed it by $14.1$--$28.7$ points. We keep it as the reference for a frozen foundation model with a light head: DANG uses the same frozen weights and trains a comparable number of parameters ($1.9$M against $2.5$M).
 
 \begin{table*}[!t]
   \centering
-  \caption{\textbf{Paired tests of DANG against each retrained model} on the primary cohorts. $\Delta$: mean Dice difference (pp, DANG minus model) over $5$ matched seeds; $p_{\text{seed}}$: paired $t$-test over seeds; $p_{\text{img}}$: Wilcoxon signed-rank test over images on seed-averaged Dice, with the number of images on which DANG is better/worse; descriptive only, because frames from one video are not independent. All $p$-values Holm-corrected over the three cohorts.}
+  \caption{\textbf{Paired tests of DANG against each retrained model} on the primary cohorts. \mbox{\unboldmath$\Delta$}: mean Dice difference (pp, DANG minus model) over $5$ matched seeds; $p_{\text{seed}}$: paired $t$-test over seeds; $p_{\text{img}}$: Wilcoxon signed-rank test over images on seed-averaged Dice, with the number of images on which DANG is better/worse; descriptive only, because frames from one video are not independent. All $p$-values Holm-corrected over the three cohorts.}
   \label{tab:stats}
   \vspace{2pt}
   \setlength{\tabcolsep}{6pt}\footnotesize\resizebox{\textwidth}{!}{%
@@ -311,7 +311,7 @@ Table~\ref{tab:main} compares DANG with the four retrained models.
 \label{sec:components}
 \begin{table*}[!t]
   \centering
-  \caption{\textbf{Component ablation of DANG.} Dice (\%) at threshold $0.5$, mean $\pm$ SD over $5$ seeds, same recipe, evaluator and T4 hardware. Removing the prototype head also removes its logit term and its loss. $\Delta$: mean Dice difference on the primary cohorts, DANG minus the variant (pp). $^{*}$: significant at the seed level after Holm correction over the three cohorts (paired $t$-test). Params and Trained in millions.}
+  \caption{\textbf{Component ablation of DANG.} Dice (\%) at threshold $0.5$, mean $\pm$ SD over $5$ seeds, same recipe, evaluator and T4 hardware. \mbox{\unboldmath$\Delta$}: mean Dice difference on the primary cohorts, DANG minus the variant (pp). $^{*}$: significant at the seed level after Holm correction over the three cohorts (paired $t$-test). Params and Trained in millions.}
   \label{tab:components}
   \vspace{2pt}
   \setlength{\tabcolsep}{4pt}\resizebox{\textwidth}{!}{%
@@ -326,11 +326,11 @@ Table~\ref{tab:main} compares DANG with the four retrained models.
   \end{tabular}%
   }
 \end{table*}
-Table~\ref{tab:components} removes each trained component of DANG in turn, over five seeds.
+Table~\ref{tab:components} removes each trained component of DANG in turn and then both, over five seeds; the last row (frozen encoder, token pyramid and decoder) is the closest baseline.
 
-\paragraph{Adapters.} Using the DINOv3 encoder fully frozen, without the adapters, costs $7.3$, $10.8$ and $5.5$ points on ColonDB, ETIS and PolypGen, the largest effect in the paper (seed-level adjusted $p<0.001$). The $0.15$M adapter parameters are therefore what lets the frozen encoder transfer to colonoscopy. The fully frozen variant still exceeds SegDINO by $21.9$, $28.7$ and $14.5$ points on these cohorts, so SegDINO's low scores (Table~\ref{tab:main}) are not explained by the missing adapters alone; its lower input resolution and lighter decoder also contribute.
+\paragraph{Adapters.} Without the adapters, the fully frozen encoder costs $7.3$, $10.8$ and $5.5$ points on ColonDB, ETIS and PolypGen (seed-level adjusted $p<0.001$), the largest effect in the paper: the $0.15$M adapter parameters are what lets the frozen encoder transfer to colonoscopy. Without adapters or prototype head, the token pyramid and scale-aware decoder still exceed SegDINO by $21.5$, $28.7$ and $14.1$ points, a gap that mixes decoder, input resolution ($448$ against $256$) and recipe; SegDINO's low scores (Table~\ref{tab:main}) are thus not due to the missing adapters.
 
-\paragraph{Prototype head.} Removing the dual-prototype margin head, its logit term and its loss lowers Dice by $0.7$, $1.0$ and $0.2$ points on the primary cohorts and halves the trained parameters ($1.94$M to $0.91$M). The effect is small and not significant over five seeds (adjusted $p=0.20$, $0.31$ and $0.31$; the $95\%$ confidence intervals of the differences, $-0.1$ to $1.4$, $-0.6$ to $2.5$ and $-0.1$ to $0.6$ points, include zero); descriptively, DANG is better on $224$ of the $380$ ColonDB images and worse on $154$. On Kvasir, ClinicDB and CVC-300 the differences are $-0.2$, $+0.1$ and $-0.4$ points. We keep the head because its effect points the same way on all three primary cohorts, but the evidence for it is weak.
+\paragraph{Prototype head.} Removing the dual-prototype margin head, its logit term and its loss lowers Dice by $0.7$, $1.0$ and $0.2$ points on the primary cohorts. The effect is small and not significant over five seeds (adjusted $p=0.20$, $0.31$ and $0.31$; the $95\%$ confidence intervals of the differences, $-0.1$ to $1.4$, $-0.6$ to $2.5$ and $-0.1$ to $0.6$ points, include zero). It is slightly negative on Kvasir and CVC-300 ($-0.2$, $-0.4$), and similar on the frozen encoder ($+0.4$, $0.0$, $+0.4$; last two rows). We keep the head because its effect points the same way on all three primary cohorts, but the evidence for it is weak.
 
 \subsection{Choice of Decoder}
 \label{sec:ablation}

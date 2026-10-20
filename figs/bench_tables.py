@@ -120,7 +120,9 @@ def ablation_rows():
 
 
 COMPONENTS = [("\\textbf{DANG}", "DANG", 1.94), ("\\quad without prototype head", "A1-noproto", 0.91),
-              ("\\quad without adapters (frozen encoder)", "A2-nolora", 1.79)]
+              ("\\quad without adapters (frozen encoder)", "A2-nolora", 1.79),
+              # trained = total minus the 21.58M frozen encoder shared by all rows (A3 logs only the total)
+              ("\\quad without adapters and prototype head", "A3-pyramid-only", 0.77)]
 
 
 def component_rows():
