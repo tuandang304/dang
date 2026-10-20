@@ -35,7 +35,7 @@ GROUPS = {
     "R2-c": ["28d364fe", "77e8b315"],
     "DANG": ["842016dd", "9963f524", "7e80a4ed"],                       # R2-b, the selected model; E1 adds PolypDB
 }
-DEPLOY_RUNS = ["55037939", "73f86fbe"]         # one-host T4 latency (D3, then D4 which also times the query decoder; later wins)
+DEPLOY_RUNS = ["55037939", "73f86fbe", "ba33170f"]   # one-host T4 latency: D3, D4, D5 (D5 adds SegDINO; later run wins)
 BASELINES = ["PraNet", "Polyp-PVT", "PraNet-V2", "SegDINO", "V12-b", "R2-c"]   # last two: five-seed ablation variants
 COHORTS = ["Kvasir", "CVC-ClinicDB", "CVC-ColonDB", "ETIS-LaribPolypDB", "CVC-300", "PolypGen", "PolypDB"]
 PRIMARY = ["CVC-ColonDB", "ETIS-LaribPolypDB", "PolypGen"]

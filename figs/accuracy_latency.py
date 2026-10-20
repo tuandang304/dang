@@ -20,15 +20,17 @@ M = json.loads((HERE / "bench_metrics.json").read_text())
 G, D = M["groups"], M["deploy"]
 PRIMARY = ["CVC-ColonDB", "ETIS-LaribPolypDB", "PolypGen"]
 POINTS = [  # group, label, deploy name, colour
+    ("SegDINO", "SegDINO (256$\\times$256)", "SegDINO (DINOv3 ViT-S/16 + DPT head, 256x256)", PALETTE["green"]),
     ("PraNet", "PraNet", "PraNet (Res2Net-50)", family("blue", 3)[0]),
     ("PraNet-V2", "PraNet-V2", "PraNet-V2 (PVTv2-B2)", family("blue", 3)[1]),
     ("Polyp-PVT", "Polyp-PVT", "Polyp-PVT (PVTv2-B2)", family("blue", 3)[2]),
-    ("V12-b", "fg/bg decoder + PASSE", "V12-b: token pyramid, fg/bg decoder, PASSE", family("red", 3)[0]),
-    ("R2-c", "query decoder", "R2-c: token pyramid, fg/bg query decoder", family("red", 3)[1]),
+    ("V12-b", "fg/bg + PASSE", "V12-b: token pyramid, fg/bg decoder, PASSE", family("red", 3)[0]),
+    ("R2-c", "query", "R2-c: token pyramid, fg/bg query decoder", family("red", 3)[1]),
     ("DANG", "DANG (ours)", "DANG (R2-b): token pyramid, SAD", PALETTE["red"]),
 ]
-OFFSET = {"PraNet": (4, -9), "PraNet-V2": (5, -3), "Polyp-PVT": (-4, 5), "V12-b": (-5, 6), "R2-c": (-5, -7),
-          "DANG": (-6, -10)}
+
+OFFSET = {"SegDINO": (6, 0), "PraNet": (6, -2), "PraNet-V2": (6, -4), "Polyp-PVT": (6, -2), "V12-b": (2, -9),
+          "R2-c": (1, 8), "DANG": (-6, 0)}
 
 
 def main():
@@ -44,10 +46,11 @@ def main():
                     elinewidth=0.9, capsize=0, zorder=3)
         dx, dy = OFFSET[g]
         ax.annotate(label, (x, mean[0]), xytext=(dx, dy), textcoords="offset points", fontsize=6.5,
-                    ha="right" if dx < 0 else "left", va="center", color="black")
+                    ha="right" if dx < 0 else ("center" if g == "V12-b" else "left"), va="center", color="black")
     ax.set_xlabel("T4 latency, batch 1, FP16 CUDA graph (ms)")
-    ax.set_ylabel("Mean Dice, ColonDB/ETIS/PolypGen (%)")
+    ax.set_ylabel("Mean primary-cohort Dice (%)")
     ax.grid(alpha=0.3)
+    ax.set_ylim(top=86.5)                       # room for the labels above the top cluster
     save(fig, str(HERE / "accuracy_latency"))
 
 

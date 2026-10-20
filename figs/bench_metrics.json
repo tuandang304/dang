@@ -7633,84 +7633,94 @@
  },
  "deploy": {
   "V8-b: dual stream, fg/bg decoder, PASSE": {
-   "run": "73f86fbe",
+   "run": "ba33170f",
    "params_m": 54.19,
    "gmacs": 47.99,
-   "eager_fp16_bs1_ms": 35.36,
-   "half_bs1_ms": 31.13,
-   "graph_half_bs1_ms": 14.66,
-   "eager_fp16_bs8_img_per_s": 39.15,
-   "peak_mem_mb_bs1": 297.55
+   "eager_fp16_bs1_ms": 34.39,
+   "half_bs1_ms": 30.66,
+   "graph_half_bs1_ms": 15.48,
+   "eager_fp16_bs8_img_per_s": 34.6,
+   "peak_mem_mb_bs1": 301.6
   },
   "V12-b: token pyramid, fg/bg decoder, PASSE": {
-   "run": "73f86fbe",
+   "run": "ba33170f",
    "params_m": 25.03,
    "gmacs": 36.09,
-   "eager_fp16_bs1_ms": 24.82,
-   "half_bs1_ms": 23.46,
-   "graph_half_bs1_ms": 10.61,
-   "eager_fp16_bs8_img_per_s": 45.25,
-   "peak_mem_mb_bs1": 207.35
+   "eager_fp16_bs1_ms": 24.43,
+   "half_bs1_ms": 23.35,
+   "graph_half_bs1_ms": 11.58,
+   "eager_fp16_bs8_img_per_s": 38.8,
+   "peak_mem_mb_bs1": 211.4
   },
   "R2-a: token pyramid, fg/bg decoder, no PASSE": {
-   "run": "73f86fbe",
+   "run": "ba33170f",
    "params_m": 25.03,
    "gmacs": 36.09,
-   "eager_fp16_bs1_ms": 24.45,
-   "half_bs1_ms": 23.04,
-   "graph_half_bs1_ms": 10.62,
-   "eager_fp16_bs8_img_per_s": 45.65,
-   "peak_mem_mb_bs1": 215.45
+   "eager_fp16_bs1_ms": 24.85,
+   "half_bs1_ms": 22.98,
+   "graph_half_bs1_ms": 11.37,
+   "eager_fp16_bs8_img_per_s": 40.2,
+   "peak_mem_mb_bs1": 219.5
   },
   "DANG (R2-b): token pyramid, SAD": {
-   "run": "73f86fbe",
+   "run": "ba33170f",
    "params_m": 23.52,
    "gmacs": 25.07,
-   "eager_fp16_bs1_ms": 22.23,
-   "half_bs1_ms": 20.86,
-   "graph_half_bs1_ms": 8.7,
-   "eager_fp16_bs8_img_per_s": 48.6,
-   "peak_mem_mb_bs1": 198.05
+   "eager_fp16_bs1_ms": 22.69,
+   "half_bs1_ms": 20.7,
+   "graph_half_bs1_ms": 9.35,
+   "eager_fp16_bs8_img_per_s": 41.3,
+   "peak_mem_mb_bs1": 202.1
   },
   "PraNet (Res2Net-50)": {
-   "run": "73f86fbe",
+   "run": "ba33170f",
    "params_m": 30.5,
    "gmacs": 13.0,
-   "eager_fp16_bs1_ms": 26.73,
-   "half_bs1_ms": 26.12,
-   "graph_half_bs1_ms": 8.12,
-   "eager_fp16_bs8_img_per_s": 186.75,
-   "peak_mem_mb_bs1": 212.05
+   "eager_fp16_bs1_ms": 26.58,
+   "half_bs1_ms": 25.8,
+   "graph_half_bs1_ms": 8.37,
+   "eager_fp16_bs8_img_per_s": 173.85,
+   "peak_mem_mb_bs1": 216.1
   },
   "Polyp-PVT (PVTv2-B2)": {
-   "run": "73f86fbe",
+   "run": "ba33170f",
    "params_m": 25.11,
    "gmacs": 10.84,
-   "eager_fp16_bs1_ms": 24.12,
-   "half_bs1_ms": 18.48,
-   "graph_half_bs1_ms": 9.07,
-   "eager_fp16_bs8_img_per_s": 176.55,
-   "peak_mem_mb_bs1": 204.7
+   "eager_fp16_bs1_ms": 23.71,
+   "half_bs1_ms": 18.34,
+   "graph_half_bs1_ms": 10.05,
+   "eager_fp16_bs8_img_per_s": 154.65,
+   "peak_mem_mb_bs1": 208.8
   },
   "PraNet-V2 (PVTv2-B2)": {
-   "run": "73f86fbe",
+   "run": "ba33170f",
    "params_m": 30.8,
    "gmacs": 12.05,
-   "eager_fp16_bs1_ms": 31.48,
-   "half_bs1_ms": 25.84,
-   "graph_half_bs1_ms": 9.95,
-   "eager_fp16_bs8_img_per_s": 171.0,
-   "peak_mem_mb_bs1": 234.65
+   "eager_fp16_bs1_ms": 30.96,
+   "half_bs1_ms": 25.55,
+   "graph_half_bs1_ms": 10.2,
+   "eager_fp16_bs8_img_per_s": 158.95,
+   "peak_mem_mb_bs1": 238.7
   },
   "R2-c: token pyramid, fg/bg query decoder": {
-   "run": "73f86fbe",
+   "run": "ba33170f",
    "params_m": 25.44,
    "gmacs": 25.53,
-   "eager_fp16_bs1_ms": 30.14,
-   "half_bs1_ms": 27.68,
-   "graph_half_bs1_ms": 9.39,
-   "eager_fp16_bs8_img_per_s": 48.9,
-   "peak_mem_mb_bs1": 182.15
+   "eager_fp16_bs1_ms": 29.97,
+   "half_bs1_ms": 27.46,
+   "graph_half_bs1_ms": 10.05,
+   "eager_fp16_bs8_img_per_s": 42.55,
+   "peak_mem_mb_bs1": 186.2
+  },
+  "SegDINO (DINOv3 ViT-S/16 + DPT head, 256x256)": {
+   "run": "ba33170f",
+   "params_m": 24.06,
+   "gmacs": 6.88,
+   "eager_fp16_bs1_ms": 14.64,
+   "half_bs1_ms": 10.87,
+   "graph_half_bs1_ms": 3.67,
+   "eager_fp16_bs8_img_per_s": 397.0,
+   "peak_mem_mb_bs1": 211.6
   }
  }
 }

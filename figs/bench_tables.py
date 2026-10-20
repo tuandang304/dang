@@ -21,10 +21,12 @@ NA = "--"
 
 # display name, group key, trainable params (M; all weights are trained in the published models)
 MAIN = [("PraNet~\\cite{fan2020pranet}", "PraNet", None), ("Polyp-PVT~\\cite{dong2021polyp}", "Polyp-PVT", None),
-        ("PraNet-V2~\\cite{hu2026pranetv2}", "PraNet-V2", None), ("\\textbf{DANG (ours)}", "DANG", 1.94)]
+        ("PraNet-V2~\\cite{hu2026pranetv2}", "PraNet-V2", None), ("SegDINO~\\cite{yang2025segdino}", "SegDINO", 2.48),
+        ("\\textbf{DANG (ours)}", "DANG", 1.94)]
 DEPLOY_NAME = {"PraNet": "PraNet (Res2Net-50)", "Polyp-PVT": "Polyp-PVT (PVTv2-B2)", "PraNet-V2": "PraNet-V2 (PVTv2-B2)",
                "DANG": ["DANG (R2-b): token pyramid, SAD", "DANG (R2-b, selected): token pyramid + SAD"], "V8-b": "V8-b: dual stream, fg/bg decoder, PASSE",
                "V12-b": "V12-b: token pyramid, fg/bg decoder, PASSE", "R2-a": "R2-a: token pyramid, fg/bg decoder, no PASSE",
+               "SegDINO": "SegDINO (DINOv3 ViT-S/16 + DPT head, 256x256)",
                "R2-c": ["R2-c: token pyramid, fg/bg query decoder", "R2-c: token pyramid + fg/bg query decoder"]}
 
 
@@ -118,7 +120,7 @@ def ablation_rows():
 
 
 def stats_rows():
-    names = {"PraNet": "PraNet", "Polyp-PVT": "Polyp-PVT", "PraNet-V2": "PraNet-V2"}
+    names = {"PraNet": "PraNet", "Polyp-PVT": "Polyp-PVT", "PraNet-V2": "PraNet-V2", "SegDINO": "SegDINO"}
     out = []
     for b, nm in names.items():
         cells = []
@@ -134,8 +136,9 @@ def stats_rows():
 
 
 def eff_rows():
-    rows = [("PraNet", "PraNet"), ("Polyp-PVT", "Polyp-PVT"), ("PraNet-V2", "PraNet-V2"), ("\\textbf{DANG (ours)}", "DANG")]
-    trainable = {"DANG": 1.94}
+    rows = [("PraNet", "PraNet"), ("Polyp-PVT", "Polyp-PVT"), ("PraNet-V2", "PraNet-V2"), ("SegDINO$^{\\S}$", "SegDINO"),
+            ("\\textbf{DANG (ours)}", "DANG")]
+    trainable = {"SegDINO": 2.48, "DANG": 1.94}
     out = []
     for name, k in rows:
         d = deploy(k)

@@ -27,7 +27,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from orx_figstyle import PALETTE, WIDE, use_style  # noqa: E402
 
 RUNS = Path("~/.local/share/openresearch").expanduser()
-MODELS = [("PraNet", "2709562b", "pranet"), ("PraNet-V2", "e733ff21", "pranet_v2"), ("DANG (ours)", "842016dd", "dang")]
+MODELS = [("PraNet", "2709562b", "pranet"), ("PraNet-V2", "e733ff21", "pranet_v2"), ("SegDINO", "5fa721d1", "segdino"),
+          ("DANG (ours)", "842016dd", "dang")]
 COHORTS = [("CVC-ColonDB", "ColonDB"), ("ETIS-LaribPolypDB", "ETIS"), ("PolypGen", "PolypGen")]
 PER_COHORT = 2
 SIZE = 352
@@ -109,7 +110,8 @@ def main():
                 contour(ax, gt, PALETTE["orange"])
             else:
                 z, members = zips[row]
-                pred = np.asarray(Image.open(io.BytesIO(z.read(members[uid]))).convert("L")) > 127
+                pm = Image.open(io.BytesIO(z.read(members[uid]))).convert("L")
+                pred = np.asarray(pm.resize((SIZE, SIZE), Image.NEAREST)) > 127   # SegDINO masks are 256x256
                 overlay = np.zeros((SIZE, SIZE, 4))
                 overlay[pred] = (0.0, 0.45, 0.70, 0.45)
                 ax.imshow(overlay, interpolation="nearest")
