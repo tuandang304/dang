@@ -4,7 +4,7 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "r2a_v12b_no_passe_seed42"
+    variant_name: str = "r2c_v12b_query_decoder_seed42"
     seed: int = 42
     # External SOTA selector (dang/sota.py) and loss: "shared" = Eq. (9) of the paper, "official" = method's own loss
     arch: str = "dang_v5"
@@ -44,7 +44,7 @@ class ExperimentConfig:
     # v12 line (deployable DANG): see dang_v5.py and dang/deploy_bench.py
     v12_trunk: str = "tpa"                             # "dual" = V8-b; "vit" = frozen ViT trunk + shallow conv stem
     v12_head: str = "v8b"                               # "v8b" = 3x3 conv on 768-ch concat; "slim" = 32-ch bottleneck
-    v12_decoder: str = "dual"                           # round 2: "dual" = V12-b dual decoder + 768-ch head; "sad"; "query"
+    v12_decoder: str = "query"                          # round 2: "dual" = V12-b dual decoder + 768-ch head; "sad"; "query"
     v12_passe: bool = False                             # round 2: PASSE logit envelope on the final logits (V12-b: True)
     v12_eval_half: bool = True                          # also score ColonDB/ETIS/PolypGen with fp16 weights (deploy precision)
     v12_dw_blocks: int = 0                              # A: replace attention in this many ViT blocks by DW conv
