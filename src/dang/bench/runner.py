@@ -76,6 +76,11 @@ def run_one_seed(cfg, seed: int, data: dict, gpu_tag: str) -> dict:
         from dang.train import build_model, get_amp_config, train_and_select_best
         amp_dtype, use_scaler = get_amp_config(device)
         model = build_model(cfg).to(device)
+        g0 = torch.Generator()
+        g0.manual_seed(seed)
+        if hasattr(model, "prepare"):   # data-dependent set-up on training images (e.g. v12 DWConv block selection)
+            model.prepare(DataLoader(MedicalSegDataset(data["train"], img_size=cfg.img_size, is_train=False),
+                                     batch_size=16, shuffle=True, num_workers=nw, generator=g0), device)
         ema = copy.deepcopy(model).to(device)
         ema.eval()
         g = torch.Generator()
@@ -120,6 +125,28 @@ def run_one_seed(cfg, seed: int, data: dict, gpu_tag: str) -> dict:
     if dump_zip is not None:
         dump_zip.close()
         log(f"PRED_MASK_DUMP {dump_zip.filename}")
+    if getattr(cfg, "v12_eval_half", False) and cfg.bench_model == "dang" and device.type == "cuda":
+        # deployment precision: fp16 weights and input, no autocast (the "half" mode of dang.deploy_bench)
+        hm = copy.deepcopy(model).half().eval()
+        hm.cfg = copy.deepcopy(hm.cfg)
+        hm.cfg.v5_vit_fp32 = False
+        half_fn = lambda out: out["logits"]
+        class _HalfInput(torch.nn.Module):
+            def forward(self, x):
+                return hm(x.half())
+
+        wrapped = _HalfInput()
+        half = {}
+        for cohort in ("CVC-ColonDB", "ETIS-LaribPolypDB", "PolypGen"):
+            if cohort in data["cohorts"]:
+                with torch.no_grad():
+                    hs = summarize(evaluate_cohort(wrapped, data["cohorts"][cohort], half_fn, device, amp_dtype=None,
+                                                   num_workers=nw))
+                half[cohort] = {"micro_dice": round(hs["micro"]["dice_native"], 2),
+                                "macro_dice": round(hs["macro"]["dice_native"], 2),
+                                "recall": round(hs["micro"]["recall_native"], 2), "hd95": round(hs["micro"]["hd95"], 1)}
+        summary["deploy_half"] = half
+        print("DEPLOY_HALF_JSON: " + json.dumps(half), flush=True)
     print(f"BENCH_SEED_SUMMARY_JSON:{seed}: " + json.dumps(summary), flush=True)
     with open(out / f"bench_summary_{cfg.bench_model}_seed{seed}.json", "w") as f:
         json.dump(summary, f)
@@ -165,6 +192,11 @@ def main_bench(cfg):
     print(f"SOTA benchmark | Variant: {cfg.variant_name} | model: {cfg.bench_model or '(data audit only)'} | seeds {seeds}")
     print(f"Effective Config: {json.dumps(cfg.to_dict(), sort_keys=True)}")
     print("=" * 100, flush=True)
+    if getattr(cfg, "bench_only", False):
+        import torch
+        from dang.deploy_bench import run_benchmark  # same-host deployment benchmark: inference only, no data
+        from dang.train import build_model
+        return run_benchmark(cfg, build_model, torch.device("cuda"))
 
     data = prepare_bench(include_polypdb=cfg.bench_polypdb)
     audit = data["audit"]

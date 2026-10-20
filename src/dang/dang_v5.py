@@ -11,6 +11,7 @@ Design, informed by 2025-2026 work:
 Setting `v5_vit=""` removes the semantic stream; the prototype head then reads the local stride-16/32 features.
 """
 
+import json
 import math
 
 import timm
@@ -150,13 +151,147 @@ class PhaseStructureBranch(nn.Module):
         return x + self.gamma * self.proj(ph.to(x.dtype))
 
 
+class DWConvAttention(nn.Module):
+    """Drop-in depthwise-convolution replacement of a pretrained ViT attention block (Scribano et al., 2605.22132,
+    blockwise DW formulation, re-implemented): out = W_O . DW3x3(W_V x) on the patch grid. W_V and W_O are the block's
+    frozen pretrained value and output projections; the 3x3 kernels (Gaussian init) and the prefix-token mixing weights
+    are trained on the task loss. Prefix tokens (cls + registers) exchange information with the grid via its mean."""
+
+    def __init__(self, attn: nn.Module, num_prefix: int):
+        super().__init__()
+        dim = attn.proj.in_features
+        heads = attn.num_heads
+        self.num_prefix = num_prefix
+        self.v = nn.Linear(dim, dim, bias=attn.qkv.bias is not None or getattr(attn, "v_bias", None) is not None)
+        self.v.weight.data.copy_(attn.qkv.weight.data[2 * dim:])
+        if self.v.bias is not None:
+            vb = attn.qkv.bias[2 * dim:] if attn.qkv.bias is not None else attn.v_bias
+            self.v.bias.data.copy_(vb.data)
+        self.proj = attn.proj
+        for p in list(self.v.parameters()) + list(self.proj.parameters()):
+            p.requires_grad = False
+        self.dw = nn.Conv2d(dim, dim, 3, padding=1, groups=dim, bias=False)
+        c = torch.arange(3) - 1
+        g = torch.exp(-(c[:, None] ** 2 + c[None, :] ** 2) / 2.0)
+        self.dw.weight.data.copy_((g / g.sum()).expand_as(self.dw.weight))
+        hd = dim // heads
+        self.pre_from_grid = nn.Parameter(torch.full((heads,), 0.5).repeat_interleave(hd))
+        self.grid_from_pre = nn.Parameter(torch.full((heads,), 0.5).repeat_interleave(hd))
+
+    def forward(self, x, rope=None, attn_mask=None, is_causal=False):
+        B, N, C = x.shape
+        v = self.v(x)
+        vp, vg = v[:, : self.num_prefix], v[:, self.num_prefix:]
+        g = int(math.isqrt(vg.shape[1]))
+        grid = vg.transpose(1, 2).reshape(B, C, g, g) + (self.grid_from_pre * vp.mean(1))[:, :, None, None]
+        out_g = self.dw(grid).flatten(2).transpose(1, 2)
+        out_p = vp + (self.pre_from_grid * vg.mean(1))[:, None, :]
+        return self.proj(torch.cat([out_p, out_g], dim=1))
+
+
+@torch.no_grad()
+def attention_variability(vit, chunks, size: int):
+    """Per-block mean over heads of sum_ij std_x(E(x)_h[i, j]) (the Sigma_b criterion of 2605.22132): low = the
+    block's attention is nearly input-independent, i.e. convolution-like. Welford over all images in `chunks`, fp32."""
+    blocks = [getattr(b, "block", b) for b in vit.blocks]
+    stats, hooks, saved = {}, [], []
+
+    def hook(idx):
+        def fn(mod, inp, out):
+            for a in out.float():  # one image at a time: (heads, N, N)
+                n, mean, m2 = stats.get(idx, (0, torch.zeros_like(a), torch.zeros_like(a)))
+                n += 1
+                d = a - mean
+                mean = mean + d / n
+                stats[idx] = (n, mean, m2 + d * (a - mean))
+        return fn
+
+    for i, b in enumerate(blocks):
+        saved.append(b.attn.fused_attn)
+        b.attn.fused_attn = False
+        hooks.append(b.attn.attn_drop.register_forward_hook(hook(i)))
+    try:
+        with torch.autocast(device_type="cuda", enabled=False):
+            for images in chunks:
+                xv = F.interpolate(images.float(), size=(size, size), mode="bilinear", align_corners=False)
+                vit.forward_features(xv)
+    finally:
+        for h in hooks:
+            h.remove()
+        for b, f in zip(blocks, saved):
+            b.attn.fused_attn = f
+    return [float((stats[i][2] / max(stats[i][0] - 1, 1)).sqrt().sum(dim=(-2, -1)).mean()) for i in range(len(blocks))]
+
+class LiteConvBlock(nn.Module):
+    """ConvNeXt-style residual block: depthwise 7x7, BN, pointwise 2x expansion, GELU, pointwise back."""
+
+    def __init__(self, ch: int):
+        super().__init__()
+        self.dw = nn.Conv2d(ch, ch, 7, padding=3, groups=ch, bias=False)
+        self.bn = nn.BatchNorm2d(ch)
+        self.pw1 = nn.Conv2d(ch, 2 * ch, 1)
+        self.act = nn.GELU()
+        self.pw2 = nn.Conv2d(2 * ch, ch, 1)
+
+    def forward(self, x):
+        return x + self.pw2(self.act(self.pw1(self.bn(self.dw(x)))))
+
+
+class DetailStem(nn.Module):
+    """Shallow convolutional spatial-prior stem (cf. ViT-Adapter SPM, SegDINO): stride-4 and stride-8 detail
+    features straight from the image, used when the frozen ViT is the only deep trunk (v12_trunk="vit")."""
+
+    def __init__(self, c4: int = 64, c8: int = 128):
+        super().__init__()
+        self.s4 = nn.Sequential(nn.Conv2d(3, 32, 3, stride=2, padding=1, bias=False), nn.BatchNorm2d(32), nn.GELU(),
+                                nn.Conv2d(32, c4, 3, stride=2, padding=1, bias=False), nn.BatchNorm2d(c4), nn.GELU(),
+                                LiteConvBlock(c4), LiteConvBlock(c4))
+        self.s8 = nn.Sequential(nn.Conv2d(c4, c8, 3, stride=2, padding=1, bias=False), nn.BatchNorm2d(c8), nn.GELU(),
+                                LiteConvBlock(c8), LiteConvBlock(c8))
+        self.channels = [c4, c8]
+
+    def forward(self, x):
+        f4 = self.s4(x)
+        return [f4, self.s8(f4)]
+
+
+class TokenPyramid(nn.Module):
+    """Token Pyramid Adaptation (SegDINO, 2606.17972, re-implemented): the k-th ViT readout depth becomes the k-th
+    pyramid level (shallow -> stride 4, deep -> stride 32) via a per-level learned resize; no convolutional trunk."""
+
+    def __init__(self, dim: int):
+        super().__init__()
+        self.up4 = nn.Sequential(nn.ConvTranspose2d(dim, dim, 2, stride=2, groups=dim, bias=False), nn.BatchNorm2d(dim),
+                                 nn.GELU(), SepConvBNAct(dim, dim))
+        self.l8 = SepConvBNAct(dim, dim)
+        self.l16 = ConvBNAct(dim, dim, kernel_size=1, padding=0)
+        self.down32 = nn.Sequential(nn.Conv2d(dim, dim, 3, stride=2, padding=1, groups=dim, bias=False),
+                                    nn.BatchNorm2d(dim), nn.GELU(), ConvBNAct(dim, dim, kernel_size=1, padding=0))
+
+    def forward(self, sem, H, W):
+        rs = lambda t, d: F.interpolate(t, size=(H // d, W // d), mode="bilinear", align_corners=False)
+        return [self.up4(rs(sem[0], 8)), self.l8(rs(sem[1], 8)), self.l16(rs(sem[2], 16)), self.down32(rs(sem[3], 16))]
+
+
 class DANGv5(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
         dim = cfg.embed_dim
-        self.cnn = timm.create_model(cfg.v5_local, pretrained=True, features_only=True)
-        self.loc_projs = nn.ModuleList([ConvBNAct(c, dim, kernel_size=1, padding=0) for c in self.cnn.feature_info.channels()])
+        # v12 trunk: "dual" = V8-b (fine-tuned ConvNeXt local stream + frozen ViT); "vit" = the frozen ViT is the only deep
+        # trunk, a shallow conv stem supplies s4/s8 detail and s16/s32 come from the semantic tokens
+        self.trunk = getattr(cfg, "v12_trunk", "dual")
+        if self.trunk == "vit":
+            assert cfg.v5_vit, "v12_trunk='vit' needs a semantic stream"
+            self.stem = DetailStem()
+            loc_ch = self.stem.channels
+        elif self.trunk == "tpa":
+            assert cfg.v5_vit and len(cfg.v5_vit_layers) == 4, "v12_trunk='tpa' needs 4 ViT readout depths"
+            loc_ch = []
+        else:
+            self.cnn = timm.create_model(cfg.v5_local, pretrained=True, features_only=True)
+            loc_ch = self.cnn.feature_info.channels()
+        self.loc_projs = nn.ModuleList([ConvBNAct(c, dim, kernel_size=1, padding=0) for c in loc_ch])
 
         self.use_vit = bool(cfg.v5_vit)
         if self.use_vit:
@@ -172,7 +307,15 @@ class DANGv5(nn.Module):
             self.sem_projs = nn.ModuleList([ConvBNAct(vd, dim, kernel_size=1, padding=0) for _ in self.vit_layers])
             # learned depth mixing: one semantic map per fused scale (s8, s16, s32) from all readout depths
             self.depth_logits = nn.Parameter(torch.zeros(3, len(self.vit_layers)))
-            self.fuse = nn.ModuleList([GatedSemanticFusion(dim) for _ in range(3)])
+            if self.trunk == "tpa":
+                self.depth_logits = None                                       # fixed depth -> scale mapping
+                self.pyramid = TokenPyramid(dim)
+            elif self.trunk == "vit":
+                self.fuse = nn.ModuleList([GatedSemanticFusion(dim)])          # s8 only: stem detail + semantics
+                self.sem_s16 = ConvBNAct(dim, dim, kernel_size=3, padding=1)
+                self.sem_s32 = ConvBNAct(dim, dim, kernel_size=3, padding=1)
+            else:
+                self.fuse = nn.ModuleList([GatedSemanticFusion(dim) for _ in range(3)])
         else:
             self.sem16 = ConvBNAct(dim, dim, kernel_size=3, padding=1)
 
@@ -197,13 +340,48 @@ class DANGv5(nn.Module):
             nn.init.zeros_(self.detail_head[1].weight)
             nn.init.zeros_(self.detail_head[1].bias)
 
+        if tuple(getattr(cfg, "v12_dw_fixed", ())):   # latency benchmark only: fixed blocks, no data needed
+            self.apply_dw(tuple(cfg.v12_dw_fixed))
+
         self.proto_head = DualPrototypeMarginHead(dim=dim, proto_dim=cfg.proto_dim, num_prototypes=cfg.num_prototypes)
 
         self.dec4 = DualDecoderStage(dim, has_top=False, use_proto=True)
         self.dec3 = DualDecoderStage(dim, has_top=True, use_proto=True)
         self.dec2 = DualDecoderStage(dim, has_top=True, use_proto=False)
         self.dec1 = DualDecoderStage(dim, has_top=True, use_proto=False)
-        self.head = nn.Sequential(ConvBNAct(dim * 4, dim, kernel_size=3, padding=1), nn.Dropout2d(0.1), nn.Conv2d(dim, 1, 1))
+        if getattr(cfg, "v12_head", "v8b") == "slim":   # 4 x 32-ch bottleneck + separable 3x3 (~0.6 vs 10.3 GMACs)
+            self.head_red = nn.ModuleList([ConvBNAct(dim, 32, kernel_size=1, padding=0) for _ in range(4)])
+            self.head = nn.Sequential(SepConvBNAct(128, 64), nn.Dropout2d(0.1), nn.Conv2d(64, 1, 1))
+        else:
+            self.head_red = None
+            self.head = nn.Sequential(ConvBNAct(dim * 4, dim, kernel_size=3, padding=1), nn.Dropout2d(0.1), nn.Conv2d(dim, 1, 1))
+
+    @torch.no_grad()
+    def prepare(self, loader, device):
+        """Data-dependent set-up before training (training images only): pick the v12_dw_blocks ViT blocks with the
+        most input-invariant attention and replace their attention with DWConvAttention."""
+        k = int(getattr(self.cfg, "v12_dw_blocks", 0))
+        if k <= 0 or not self.use_vit:
+            return
+        imgs, n_s = [], int(getattr(self.cfg, "v12_dw_samples", 64))
+        for batch in loader:
+            imgs.append(batch["image"])
+            if sum(t.shape[0] for t in imgs) >= n_s:
+                break
+        imgs = torch.cat(imgs)[:n_s].to(device)
+        sigma_b = attention_variability(self.vit, imgs.split(4), self.cfg.v5_vit_size)
+        chosen = sorted(sorted(range(len(sigma_b)), key=lambda i: sigma_b[i])[:k])
+        print("V12_DW_SELECTION_JSON: " + json.dumps({"sigma_b": [round(v, 2) for v in sigma_b], "chosen": chosen,
+                                                      "n_samples": int(imgs.shape[0])}), flush=True)
+        self.apply_dw(chosen)
+
+    def apply_dw(self, indices):
+        npre = getattr(self.vit, "num_prefix_tokens", 1)
+        dev = next(self.vit.parameters()).device
+        for i in indices:
+            inner = getattr(self.vit.blocks[i], "block", self.vit.blocks[i])
+            inner.attn = DWConvAttention(inner.attn, npre).to(dev)
+        self.dw_blocks = list(indices)
 
     def _semantic(self, x):
         v = self.cfg.v5_vit_size
@@ -232,9 +410,23 @@ class DANGv5(nn.Module):
 
     def forward(self, x, gt_mask=None):
         H, W = x.shape[-2:]
-        loc = [proj(f) for proj, f in zip(self.loc_projs, self.cnn(x))]  # s4, s8, s16, s32
+        if self.trunk == "tpa":
+            sem = self._semantic(x)
+            proto_logits, _ = self.proto_head(sem, gt_mask=gt_mask)
+            loc = self.pyramid(sem, H, W)                                     # s4, s8, s16, s32 from tokens only
+        elif self.trunk == "vit":
+            loc = [proj(f) for proj, f in zip(self.loc_projs, self.stem(x))]  # s4, s8
+            sem = self._semantic(x)
+            proto_logits, _ = self.proto_head(sem, gt_mask=gt_mask)
+            w = F.softmax(self.depth_logits, dim=-1)
+            mixed = [sum(w[k, j] * s for j, s in enumerate(sem)) for k in range(3)]
+            loc[1] = self.fuse[0](loc[1], mixed[0])
+            rs = lambda t, d: F.interpolate(t, size=(H // d, W // d), mode="bilinear", align_corners=False)
+            loc += [self.sem_s16(rs(mixed[1], 16)), self.sem_s32(rs(mixed[2], 32))]
+        else:
+            loc = [proj(f) for proj, f in zip(self.loc_projs, self.cnn(x))]  # s4, s8, s16, s32
 
-        if self.use_vit:
+        if self.use_vit and self.trunk == "dual":
             sem = self._semantic(x)
             proto_logits, _ = self.proto_head(sem, gt_mask=gt_mask)
             w = F.softmax(self.depth_logits, dim=-1)
@@ -244,7 +436,7 @@ class DANGv5(nn.Module):
             if self.fuse_s4:
                 w4 = F.softmax(self.depth_logits_s4, dim=-1)
                 loc[0] = self.fuse4(loc[0], sum(w4[0, j] * s for j, s in enumerate(sem)))
-        else:
+        elif not self.use_vit:
             s16 = self.sem16(loc[2])
             s32 = F.interpolate(loc[3], size=s16.shape[-2:], mode="bilinear", align_corners=False)
             proto_logits, _ = self.proto_head([s16, s16, s32, s16], gt_mask=gt_mask)
@@ -258,7 +450,8 @@ class DANGv5(nn.Module):
         p1, f1, b1 = self.dec1(loc[0], p2, f2, b2)
 
         size1 = p1.shape[-2:]
-        cat = torch.cat([p1] + [F.interpolate(p, size=size1, mode="bilinear", align_corners=False) for p in (p2, p3, p4)], dim=1)
+        ps = [p1, p2, p3, p4] if self.head_red is None else [r(p) for r, p in zip(self.head_red, (p1, p2, p3, p4))]
+        cat = torch.cat([ps[0]] + [F.interpolate(p, size=size1, mode="bilinear", align_corners=False) for p in ps[1:]], dim=1)
         stage = (f1 - b1).float() * 0.5
         z = 0.5 * self.head(cat).float() + 0.5 * stage
         z = 0.8 * z + 0.2 * F.interpolate(proto_logits.float(), size=size1, mode="bilinear", align_corners=False)

@@ -41,6 +41,14 @@ class ExperimentConfig:
     v5_fuse_s4: bool = False                            # round-1: semantic fusion also at stride 4
     v5_ibn: bool = False                                # round-1: IBN half instance norm after ConvNeXt stages 0-1
     v5_phase: bool = False                              # round-1: Fourier phase-only structure branch at stride 4
+    # v12 line (deployable DANG): see dang_v5.py and dang/deploy_bench.py
+    v12_trunk: str = "dual"                             # "dual" = V8-b; "vit" = frozen ViT trunk + shallow conv stem
+    v12_head: str = "v8b"                               # "v8b" = 3x3 conv on 768-ch concat; "slim" = 32-ch bottleneck
+    v12_eval_half: bool = True                          # also score ColonDB/ETIS/PolypGen with fp16 weights (deploy precision)
+    v12_dw_blocks: int = 0                              # A: replace attention in this many ViT blocks by DW conv
+    v12_dw_samples: int = 64                            # training images for the Sigma_b block-selection statistic
+    v12_dw_fixed: tuple[int, ...] = ()                  # latency benchmark only: fixed DW blocks (no data)
+    bench_only: bool = False                            # run dang.deploy_bench (no data, no training) and exit
 
     # Architecture knobs
     cnn_backbone: str = "convnext_tiny.fb_in22k_ft_in1k_384"
@@ -82,6 +90,7 @@ class ExperimentConfig:
         d = asdict(self)
         d["seeds"] = list(self.seeds)
         d["v5_vit_layers"] = list(self.v5_vit_layers)
+        d["v12_dw_fixed"] = list(self.v12_dw_fixed)
         return d
 
 
