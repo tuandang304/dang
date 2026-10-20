@@ -61,6 +61,32 @@ class EvaConvLoRA(nn.Module):
         return out + self.up(z)
 
 
+class CachedRope(nn.Module):
+    """Wraps a timm DINOv3 RoPE module and builds its table once per (grid, device, dtype).
+
+    With dynamic_img_size timm rebuilds the coordinate grid on the host every forward and copies it to the device; that
+    copy blocks CUDA-graph capture and costs a sync per call. The table depends only on the grid (no coordinate
+    augmentation while aug_active is False), so the cached result is bit-identical."""
+
+    def __init__(self, rope: nn.Module):
+        super().__init__()
+        self.inner = rope
+        self._key, self._embed = None, None
+
+    def get_embed(self, shape=None):
+        if self.inner.training and getattr(self.inner, "aug_active", False):
+            return self.inner.get_embed(shape)
+        ref = next(iter(self.inner.buffers()), None)
+        key = (tuple(shape) if shape is not None else None, None if ref is None else (ref.device, ref.dtype))
+        if key != self._key:
+            self._embed, self._key = self.inner.get_embed(shape), key
+        return self._embed
+
+    def update_feat_shape(self, feat_shape):
+        self._key = None
+        self.inner.update_feat_shape(feat_shape)
+
+
 class GatedSemanticFusion(nn.Module):
     """loc + gamma * sigmoid(gate([loc, sem])) * sem, gamma initialised small so training starts from the local stream."""
 
@@ -422,6 +448,8 @@ class DANGv5(nn.Module):
             self.vit = timm.create_model(cfg.v5_vit, pretrained=True, dynamic_img_size=True)
             for p in self.vit.parameters():
                 p.requires_grad = False
+            if getattr(cfg, "v12_cache_rope", False) and getattr(self.vit, "rope", None) is not None:
+                self.vit.rope = CachedRope(self.vit.rope)
             vd = self.vit.embed_dim
             nb = len(self.vit.blocks)
             npre = getattr(self.vit, "num_prefix_tokens", 1)
