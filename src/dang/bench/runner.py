@@ -70,6 +70,18 @@ def run_one_seed(cfg, seed: int, data: dict, gpu_tag: str) -> dict:
         model = recipe.build().to(device)
         model = train_official(recipe, model, data["train"], device, log, num_workers=nw)
         logits_fn, amp_dtype = recipe.test_logits, None                     # official code runs fp32
+    elif cfg.bench_model == "dang" and tuple(getattr(cfg, "bench_eval_weights", ())):
+        # evaluation only: load this seed's saved final (EMA) weights instead of training
+        from dang.train import build_model
+        model = build_model(cfg).to(device)
+        path = next(Path(d) / f"weights_dang_seed{seed}_fp16.pth" for d in cfg.bench_eval_weights
+                    if (Path(d) / f"weights_dang_seed{seed}_fp16.pth").exists())
+        state = torch.load(path, map_location=device)
+        missing, unexpected = model.load_state_dict({k: v.float() if v.is_floating_point() else v
+                                                     for k, v in state.items()}, strict=True)
+        model.eval()
+        log(f"EVAL ONLY: loaded {path} ({len(state)} tensors)")
+        logits_fn, amp_dtype = (lambda out: out["logits"]), None
     elif cfg.bench_model == "dang":
         from torch.utils.data import DataLoader
         from dang.data import MedicalSegDataset
@@ -101,15 +113,20 @@ def run_one_seed(cfg, seed: int, data: dict, gpu_tag: str) -> dict:
     log(f"trained in {train_min:.1f} min | params={params_m:.2f}M")
 
     out = _out_dir()
-    torch.save({k: (v.half() if v.is_floating_point() else v) for k, v in model.state_dict().items()},
-               out / f"weights_{cfg.bench_model}_seed{seed}_fp16.pth")
+    eval_only = bool(tuple(getattr(cfg, "bench_eval_weights", ())))
+    if not eval_only:
+        torch.save({k: (v.half() if v.is_floating_point() else v) for k, v in model.state_dict().items()},
+                   out / f"weights_{cfg.bench_model}_seed{seed}_fp16.pth")
     dump_zip = None
     if getattr(cfg, "bench_dump_seed", None) == seed:
         dump_zip = zipfile.ZipFile(out / f"pred_masks_{cfg.bench_model}_seed{seed}.zip", "w", zipfile.ZIP_DEFLATED)
 
     summary = {"model": cfg.bench_model, "variant": cfg.variant_name, "seed": seed, "train_minutes": round(train_min, 2),
                "params_m": round(params_m, 3), "manifest": data["audit"]["manifest_sha256_16"], "cohorts": {}}
+    only = tuple(getattr(cfg, "bench_eval_cohorts", ()))
     for cohort, samples in data["cohorts"].items():
+        if only and cohort not in only:
+            continue
         te = time.time()
         recs = evaluate_cohort(model, samples, logits_fn, device, amp_dtype=amp_dtype,
                                dump=(dump_zip, cohort) if dump_zip is not None else None,

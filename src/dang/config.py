@@ -4,7 +4,7 @@ from dataclasses import dataclass, asdict
 @dataclass
 class ExperimentConfig:
     # Experiment identification
-    variant_name: str = "r2b_5seed_s43_46"
+    variant_name: str = "e1_polypdb_final_test_r2b"
     seed: int = 42
     # External SOTA selector (dang/sota.py) and loss: "shared" = Eq. (9) of the paper, "official" = method's own loss
     arch: str = "dang_v5"
@@ -16,10 +16,15 @@ class ExperimentConfig:
     # SOTA benchmark (dang/bench): "dang" = Kvasir stress protocol above; "bench" = PraNet split + PolypGen + PolypDB
     protocol: str = "bench"
     bench_model: str = "dang"                     # "" = data audit only | "pranet" | "polyp_pvt" | "pranet_v2" | "dang"
-    bench_seeds: tuple[int, ...] = (43, 44, 45, 46)
-    bench_polypdb: bool = False                # PolypDB is a final-test cohort: off for DANG screening runs
-    bench_dump_seed: int | None = 42          # binary 352x352 prediction masks for this seed (paper figures)
+    bench_seeds: tuple[int, ...] = (42, 43, 44, 45, 46)
+    bench_polypdb: bool = True                 # PolypDB is a final-test cohort: off for DANG screening runs
+    bench_dump_seed: int | None = None         # binary 352x352 prediction masks for this seed (paper figures)
     bench_dang_epochs: int = 20
+    # evaluation only (E1): saved final weights of each seed (run kaggle-output dirs on this machine), cohorts to score
+    bench_eval_weights: tuple[str, ...] = (
+        "/home/tuan/.local/share/openresearch/local-runs/842016dd-aed4-4164-824a-22f424890bbf/kaggle-output",
+        "/home/tuan/.local/share/openresearch/local-runs/9963f524-df68-4857-b272-2097b7fc5250/kaggle-output")
+    bench_eval_cohorts: tuple[str, ...] = ("ETIS-LaribPolypDB", "PolypDB")
     bench_num_workers: int = 2
 
     # Stress-test S1 (5% Few-Shot Kvasir = 40 images) + Full 100% (800 images)
@@ -93,6 +98,8 @@ class ExperimentConfig:
         d["seeds"] = list(self.seeds)
         d["v5_vit_layers"] = list(self.v5_vit_layers)
         d["v12_dw_fixed"] = list(self.v12_dw_fixed)
+        d["bench_eval_weights"] = list(self.bench_eval_weights)
+        d["bench_eval_cohorts"] = list(self.bench_eval_cohorts)
         return d
 
 
