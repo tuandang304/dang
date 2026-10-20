@@ -35,8 +35,8 @@ GROUPS = {
     "R2-c": ["28d364fe", "77e8b315"],
     "DANG": ["842016dd", "9963f524"],                                   # R2-b, the selected model
 }
-DEPLOY_RUNS = ["27531cba", "55037939"]         # one-host T4 latency (D2: DANG + published models; D3: every paper model)
-BASELINES = ["PraNet", "Polyp-PVT", "PraNet-V2", "SegDINO"]
+DEPLOY_RUNS = ["55037939"]                     # one-host T4 latency benchmark of every model in the paper
+BASELINES = ["PraNet", "Polyp-PVT", "PraNet-V2", "SegDINO", "V12-b", "R2-c"]   # last two: five-seed ablation variants
 COHORTS = ["Kvasir", "CVC-ClinicDB", "CVC-ColonDB", "ETIS-LaribPolypDB", "CVC-300", "PolypGen", "PolypDB"]
 PRIMARY = ["CVC-ColonDB", "ETIS-LaribPolypDB", "PolypGen"]
 METRICS = {"dice": "dice_native", "mdice_tb": "mdice_tb", "iou": "iou_native", "bf1": "boundary_f1", "hd95": "hd95",
