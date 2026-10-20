@@ -17,20 +17,37 @@ from torch.utils.flop_counter import FlopCounterMode
 
 V8B = {"arch": "dang_v5", "v5_local": "convnext_tiny.dinov3_lvd1689m", "v5_vit": "vit_small_patch16_dinov3.lvd1689m",
        "v5_vit_size": 448, "v5_vit_layers": (2, 5, 8, 11), "v5_lora_blocks": 12, "v5_lora_rank": 16,
-       "v5_vit_fp32": True, "v12_trunk": "dual"}
+       "v5_vit_fp32": True, "v12_trunk": "dual", "v12_cache_rope": True}
 DW6 = (1, 3, 5, 7, 9, 11)   # latency does not depend on which blocks; training runs select them from data
 VARIANTS = {
     "V8-b (reference)": V8B,
-    "V8-b + DWConv 6/12 blocks (V12-c)": {**V8B, "v12_dw_fixed": DW6},
     "V12-a ViT trunk + conv detail stem": {**V8B, "v12_trunk": "vit"},
     "V12-b ViT trunk + token pyramid": {**V8B, "v12_trunk": "tpa"},
-    "info: V12-a + DWConv 6/12": {**V8B, "v12_trunk": "vit", "v12_dw_fixed": DW6},
-    "info: V12-a + slim head": {**V8B, "v12_trunk": "vit", "v12_head": "slim"},
+    "info: V12-b uncached RoPE (= V12-L)": {**V8B, "v12_trunk": "tpa", "v12_cache_rope": False},
+    "info: V12-b + slim head": {**V8B, "v12_trunk": "tpa", "v12_head": "slim"},
+    "info: V12-b without Conv-LoRA": {**V8B, "v12_trunk": "tpa", "v5_lora_blocks": 0},
     "info: V12-b + DWConv 6/12 + slim head": {**V8B, "v12_trunk": "tpa", "v12_dw_fixed": DW6, "v12_head": "slim"},
-    "info: V8-b without Conv-LoRA": {**V8B, "v5_lora_blocks": 0},
+    "info: bare ViT-S@448 readout (floor)": {"_vit_floor": True},
     "Polyp-PVT (PVTv2-B2)": {"arch": "polyp_pvt"},
     "PraNet-V2 (PVTv2-B2)": {"arch": "pranet_v2"},
 }
+
+
+class ViTFloor(torch.nn.Module):
+    """Lower bound for any ViT-S@448 design: resize + frozen DINOv3 ViT-S readout at depths 2/5/8/11, nothing else."""
+
+    def __init__(self, cfg):
+        super().__init__()
+        import timm
+        from dang.dang_v5 import CachedRope
+        self.size = cfg.v5_vit_size
+        self.vit = timm.create_model("vit_small_patch16_dinov3.lvd1689m", pretrained=True, dynamic_img_size=True)
+        self.vit.rope = CachedRope(self.vit.rope)
+
+    def forward(self, x):
+        x = torch.nn.functional.interpolate(x, size=(self.size, self.size), mode="bilinear", align_corners=False)
+        return self.vit.forward_intermediates(x, indices=[2, 5, 8, 11], norm=True, output_fmt="NCHW",
+                                              intermediates_only=True)[-1]
 
 
 def _time(fn, iters):
@@ -60,8 +77,9 @@ def _half_model(model):
 def bench_one(name, overrides, base_cfg, build_model, device):
     cfg = copy.deepcopy(base_cfg)
     for k, v in overrides.items():
-        setattr(cfg, k, v)
-    model = build_model(cfg).eval()
+        if not k.startswith("_"):
+            setattr(cfg, k, v)
+    model = (ViTFloor(cfg) if overrides.get("_vit_floor") else build_model(cfg)).eval()
     params = sum(p.numel() for p in model.parameters()) / 1e6
     s = cfg.img_size
     rec = {"model": name, "params_m": round(params, 2)}
