@@ -21,10 +21,12 @@
 \makeatother
 
 \begin{document}
-\history{Date of publication xxxx 00, 0000, date of current version xxxx 00, 0000.}
-\doi{10.1109/ACCESS.2024.0429000}
+\history{Date of publication October 00, 2026, date of current version October 00, 2026.}
+\doi{10.1109/ACCESS.2026.xxxxxxx}
+\year{2026}
+\vol{14}
 
-\title{DANG: Prototype-Anchored Frozen DINOv3 Features for Generalizable Polyp Segmentation}
+\title{DANG: Adapting Frozen DINOv3 Features with a Token-Pyramid Decoder for Generalizable Polyp Segmentation}
 \author{\uppercase{Dang Thanh Tuan}\authorrefmark{1}
 AND \uppercase{Le Phu-Nguyen}\authorrefmark{2}}
 
@@ -32,13 +34,13 @@ AND \uppercase{Le Phu-Nguyen}\authorrefmark{2}}
 \address[2]{Faculty of Electrical and Electronics Engineering, Vietnam Aerospace University, Ho Chi Minh City, Vietnam (e-mail: nguyenlp@vaa.edu.vn)}
 
 \markboth
-{Dang and Le: DANG: Prototype-Anchored Frozen DINOv3 Features for Polyp Segmentation}
-{Dang and Le: DANG: Prototype-Anchored Frozen DINOv3 Features for Polyp Segmentation}
+{Dang and Le: DANG: Adapting Frozen DINOv3 Features for Generalizable Polyp Segmentation}
+{Dang and Le: DANG: Adapting Frozen DINOv3 Features for Generalizable Polyp Segmentation}
 
 \corresp{Corresponding author: Le Phu-Nguyen (e-mail: nguyenlp@vaa.edu.vn).}
 
 \begin{abstract}
-Polyp segmentation networks score well on the colonoscopy centres they are trained on but lose accuracy on frames from other centres and devices. We present DANG, a segmentation network built on a frozen DINOv3 ViT-S/16 foundation model with convolutional low-rank adapters. DANG reads tokens from four depths of the frozen encoder, arranges them into a four-scale pyramid decoded by a scale-aware decoder, and adds a dual-prototype margin head that scores every token against learned foreground and background prototypes and image-specific self-support centroids. Of its $23.5$M parameters only $1.9$M are trained; ablations show that the adapters account for $5.5$--$10.8$ points on the external cohorts and the prototype head for a smaller $0.2$--$0.9$. We train on the standard $1{,}450$-image Kvasir-SEG and CVC-ClinicDB split and test on the five standard test sets, on $1{,}399$ deduplicated frames from the six centres of PolypGen and, as a held-out final test, on $1{,}376$ frames of PolypDB. PraNet, Polyp-PVT, PraNet-V2 and SegDINO, which uses the same frozen DINOv3 encoder, are retrained from their official code with the settings of their papers, every model is evaluated at its final epoch with one evaluator, and all results are means over five seeds with paired tests. On the three cohorts our claims rest on, DANG reaches $80.7$, $82.7$ and $84.2\%$ mean Dice on CVC-ColonDB, ETIS-LaribPolypDB and PolypGen, against $80.9$, $75.5$ and $81.4\%$ for the best retrained model on each: a tie on CVC-ColonDB and gains of $7.3$ and $2.7$ points that are significant against every compared model after Holm correction. On PolypDB, which was not used for any design decision, it reaches $89.8\%$ against $86.7\%$ for the best retrained model. On the in-domain CVC-ClinicDB test set it trails Polyp-PVT by $3.2$ points. A batch-1 frame takes $9.3$~ms on an NVIDIA T4 with CUDA graphs, less than Polyp-PVT and PraNet-V2.
+Polyp segmentation networks trained on two colonoscopy centres lose accuracy on frames from other centres and devices. We present DANG, which adapts a frozen DINOv3 ViT-S/16 encoder with convolutional bottleneck adapters, decodes a four-scale token pyramid with a scale-aware decoder, and adds a dual-prototype margin head; only $1.9$M of its $23.5$M parameters are trained. We train on the standard $1{,}450$-image Kvasir-SEG and CVC-ClinicDB split, develop on the five standard test sets and $1{,}399$ deduplicated PolypGen frames, and hold out $1{,}376$ PolypDB frames as a final test evaluated once. PraNet, Polyp-PVT, PraNet-V2 and SegDINO are retrained from their official code with their own recipes, and every model is scored at its final epoch by one evaluator over five seeds. On the held-out PolypDB, DANG reaches $89.8\%$ mean Dice against $86.7\%$ for the strongest retrained model, Polyp-PVT (paired $p=0.005$). On the development cohorts it gains $7.3$ and $2.7$ points on ETIS-LaribPolypDB and PolypGen and shows no significant difference on CVC-ColonDB; it trails Polyp-PVT by $3.2$ points on the in-domain CVC-ClinicDB and in boundary F1 on three of four external cohorts, and its advantage comes mainly from fewer failed frames. Ablations attribute $5.5$--$10.8$ points on the primary cohorts to the adapters and $0.2$--$1.0$ points, not significant across seeds, to the prototype head. With FP16 weights and CUDA graphs a frame takes $9.3$~ms on an NVIDIA T4.
 \end{abstract}
 
 \begin{keywords}
@@ -51,21 +53,21 @@ Colonoscopy, deep learning, domain generalization, foundation models, medical im
 
 \section{Introduction}
 \label{sec:introduction}
-\PARstart{C}{olorectal} cancer is the third most common cancer and the second leading cause of cancer death worldwide~\cite{sung2021globocan}, and removing adenomatous polyps during colonoscopy lowers colorectal-cancer mortality~\cite{zauber2012polypectomy}. Pixel-level polyp segmentation supports this by delineating lesion margins. The standard benchmark trains on $1{,}450$ frames from two centres, Kvasir-SEG~\cite{jha2020kvasir} and CVC-ClinicDB, and tests on five public sets~\cite{fan2020pranet}. On the two in-domain test sets current models exceed $90\%$ mean Dice; on CVC-ColonDB~\cite{tajbakhsh2015automated} and ETIS-LaribPolypDB~\cite{silva2014toward}, which come from other centres and cameras, the same models lose $10$--$25$ points (Table~\ref{tab:main}). Generalization to unseen centres, not in-domain accuracy, is the open problem.
+\PARstart{C}{olorectal} cancer is the third most common cancer and the second leading cause of cancer death worldwide~\cite{sung2021globocan}, and removing adenomatous polyps during colonoscopy lowers colorectal-cancer mortality~\cite{zauber2012polypectomy}. Pixel-level polyp segmentation supports this by delineating lesion margins. The standard benchmark trains on $1{,}450$ frames from two centres, Kvasir-SEG~\cite{jha2020kvasir} and CVC-ClinicDB, and tests on five public sets~\cite{fan2020pranet}. On the two in-domain test sets current CNN and transformer models exceed $90\%$ mean Dice; on CVC-ColonDB~\cite{tajbakhsh2015automated} and ETIS-LaribPolypDB~\cite{silva2014toward}, which come from other centres and cameras, these models lose $10$--$25$ points (Table~\ref{tab:main}). Generalization to unseen centres, not in-domain accuracy, is the open problem.
 
-Vision foundation models such as DINOv2~\cite{oquab2024dinov2} and DINOv3~\cite{simeoni2025dinov3} are trained on very large image collections and transfer across domains, which makes them natural encoders for this problem. Keeping such an encoder frozen also keeps training cheap and the trainable part small. SegDINO~\cite{yang2025segdino} pairs a frozen DINOv3 with a light decoder; under our protocol, however, it reaches only $43.2\%$ mean Dice on ETIS (Table~\ref{tab:main}). A frozen encoder trained on natural images does not see colonoscopy frames, and its $16$-pixel patch grid is coarser than lesion boundaries, so how the frozen features are adapted and decoded decides whether a frozen foundation model helps.
+Vision foundation models such as DINOv2~\cite{oquab2024dinov2} and DINOv3~\cite{simeoni2025dinov3} are trained on very large image collections and transfer across domains, which makes them natural encoders for this problem. Keeping such an encoder frozen also keeps training cheap and the trainable part small. SegDINO~\cite{yang2025segdino} pairs a frozen DINOv3 with a light decoder; under our protocol, however, it reaches only $43.3\%$ mean Dice on ETIS (Table~\ref{tab:main}). A frozen encoder trained on natural images does not see colonoscopy frames, and its $16$-pixel patch grid is coarser than lesion boundaries, so how the frozen features are adapted and decoded decides whether a frozen foundation model helps.
 
 \begin{figure*}[!t]
   \centering
   \includegraphics[width=\linewidth]{../figs/arch_diagram.pdf}
-  \caption{\textbf{DANG decodes a frozen DINOv3 encoder through a token pyramid and a prototype margin head.} A $352\times352$ frame is resized to $448\times448$ and encoded by a frozen DINOv3 ViT-S/16 whose $12$ blocks carry trained Conv-LoRA adapters. Tokens from blocks $3$, $6$, $9$ and $12$ are projected to $192$ channels on the $28\times28$ grid. The token pyramid assigns one depth to each stride ($s_4$--$s_{32}$) and the scale-aware decoder fuses them top-down into the logit $Z_{\text{SAD}}$. The dual-prototype margin head (the proposed component, blue) turns the three deepest maps into the margin map $\pi_{\text{proto}}$, which is added to $Z_{\text{SAD}}$ with weight $0.2$. Dashed: heads used only for deep supervision during training. Thumbnails: a Kvasir test frame and its ground-truth mask, for illustration only.}
+  \caption{\textbf{DANG adapts a frozen DINOv3 encoder and decodes it through a token pyramid.} A $352\times352$ frame is resized to $448\times448$ and encoded by a frozen DINOv3 ViT-S/16 whose $12$ blocks are each followed by a trained convolutional bottleneck adapter (``Conv-LoRA'' in the figure). Tokens from blocks $3$, $6$, $9$ and $12$ are projected to $192$ channels on the $28\times28$ grid. The token pyramid assigns one depth to each stride ($s_4$--$s_{32}$) and the scale-aware decoder fuses them top-down into the logit $Z_{\text{SAD}}$. The dual-prototype margin head (blue) turns the three deepest maps into the margin map $\pi_{\text{proto}}$, which is added to $Z_{\text{SAD}}$ with weight $0.2$. Dashed: heads used only for deep supervision during training. Thumbnails: a Kvasir test frame and its ground-truth mask, for illustration only.}
   \label{fig:arch}
 \end{figure*}
 
 We present \textbf{DANG} (Figure~\ref{fig:arch}) and make three contributions:
 \begin{itemize}
-  \item \textbf{A frozen-foundation-model segmenter with a prototype margin head.} DANG adapts a frozen DINOv3 ViT-S/16 with convolutional low-rank adapters, decodes a token pyramid with a scale-aware decoder, and adds a dual-prototype margin head with test-time self-support. It trains $1.9$M of its $23.5$M parameters and needs no convolutional backbone.
-  \item \textbf{A controlled benchmark.} The standard training split; the five standard test sets kept as published; two deduplicated multi-centre cohorts, PolypGen~\cite{ali2023polypgen} and PolypDB~\cite{jha2024polypdb}, the latter held out as a final test; four published models retrained from their official code; final-epoch checkpoints, one evaluator, five seeds and paired tests with multiplicity correction.
+  \item \textbf{An adapted frozen-foundation-model segmenter.} DANG adapts a frozen DINOv3 ViT-S/16 with convolutional bottleneck adapters, decodes a token pyramid with the scale-aware decoder of the extended SegDINO~\cite{yang2026segdino}, and adds a dual-prototype margin head with test-time self-support. It trains $1.9$M of its $23.5$M parameters and needs no convolutional backbone.
+  \item \textbf{A controlled benchmark.} The standard training split; the five standard test sets kept as published; two deduplicated multi-centre cohorts, PolypGen~\cite{ali2023polypgen} and PolypDB~\cite{jha2024polypdb}, the latter held out and evaluated once as a final test; four published models retrained from their official code with their own recipes; final-epoch checkpoints, one evaluator, five seeds, paired tests with multiplicity correction, and boundary and failure-rate metrics next to Dice.
   \item \textbf{Ablations.} Over five seeds we remove the adapters and the prototype head in turn, and on the same frozen encoder and token pyramid we compare three decoders and report what each costs in latency on an NVIDIA T4.
 \end{itemize}
 
@@ -76,7 +78,7 @@ We present \textbf{DANG} (Figure~\ref{fig:arch}) and make three contributions:
 
 \paragraph{Prototype-based segmentation.} Few-shot semantic segmentation classifies query pixels by their similarity to class prototypes computed from support images~\cite{wang2019panet}. Self-support prototypes~\cite{fan2022ssp} are built from confident features of the query image itself, which narrows the gap between support and query appearance. DANG adopts this self-support idea inside a fully supervised segmenter: learned prototypes and ground-truth anchors give a prior, and image-specific self-support centroids adapt it at test time.
 
-\paragraph{Adapting frozen vision transformers.} Low-rank adaptation (LoRA~\cite{hu2022lora}) and its convolutional variant for SAM (Conv-LoRA~\cite{zhong2024convlora}) adapt frozen transformers with few parameters, and dense-prediction heads such as DPT~\cite{ranftl2021vision} reassemble ViT tokens from several depths into a multi-scale map. DANG uses Conv-LoRA adapters in every block of the frozen encoder and a fixed depth-to-stride assignment instead of learned reassembly.
+\paragraph{Adapting frozen vision transformers.} Low-rank adaptation (LoRA~\cite{hu2022lora}) adapts frozen transformers with few parameters; Conv-LoRA~\cite{zhong2024convlora} adds convolutional experts to the low-rank branch of SAM's encoder, and convolutional bypass adapters such as Convpass~\cite{jie2022convpass} add a small convolutional residual path to each block. Dense-prediction heads such as DPT~\cite{ranftl2021vision} reassemble ViT tokens from several depths into a multi-scale map. DANG uses a residual convolutional bottleneck after every block of the frozen encoder, in the spirit of these adapters, and a fixed depth-to-stride assignment instead of learned reassembly.
 
 \section{Method}
 DANG maps an RGB frame $I\in\mathbb{R}^{3\times352\times352}$ to a polyp probability map $\hat Y=\sigma(Z)$ (Figure~\ref{fig:arch}); Figure~\ref{fig:modules} details its trained components. We write $X^{\uparrow n}$ for bilinear resizing of a map $X$ to $n\times n$ and $s_k$ for stride $k$ relative to the $352\times352$ input.
@@ -84,18 +86,18 @@ DANG maps an RGB frame $I\in\mathbb{R}^{3\times352\times352}$ to a polyp probabi
 \begin{figure*}[!t]
   \centering
   \includegraphics[width=\linewidth]{../figs/arch_modules.pdf}
-  \caption{\textbf{The three trained components of DANG.} \textbf{(a)}~A Conv-LoRA adapter after each frozen ViT block (Eq.~\eqref{eq:convlora}): a rank-$16$ bottleneck with a depthwise $3\times3$ convolution on the token grid, whose up-projection starts at zero. \textbf{(b)}~The token pyramid (left column, Eq.~\eqref{eq:pyramid}) and the scale-aware decoder (Eqs.~\eqref{eq:rdb} and~\eqref{eq:topdown}): each level is refined by a residual depthwise block $R$, fused top-down with the upsampled coarser level and refined again by $R'$; auxiliary $1\times1$ heads give the deep-supervision logits $A_{32},A_{16},A_8$. \textbf{(c)}~The dual-prototype margin head (Eqs.~\eqref{eq:proto_prior} and~\eqref{eq:proto_total}): unit embeddings are scored against learned prototypes and ground-truth anchors, which are updated from the mask during training only, and the resulting prior is refined by image-specific self-support centroids.}
+  \caption{\textbf{The three trained components of DANG.} \textbf{(a)}~The convolutional bottleneck adapter after each frozen ViT block (Eq.~\eqref{eq:convlora}): a rank-$16$ bottleneck with a depthwise $3\times3$ convolution on the $28\times28$ patch-token grid, whose up-projection starts at zero. \textbf{(b)}~The token pyramid (left column, Eq.~\eqref{eq:pyramid}; levels at $11^2$, $22^2$, $44^2$ and $88^2$) and the scale-aware decoder (Eqs.~\eqref{eq:rdb} and~\eqref{eq:topdown}): each level is refined by a residual depthwise block $R$, fused top-down with the upsampled coarser level and refined again by $R'$; auxiliary $1\times1$ heads give the deep-supervision logits $A_{32},A_{16},A_8$. \textbf{(c)}~The dual-prototype margin head (Eqs.~\eqref{eq:proto_prior} and~\eqref{eq:proto_total}): unit embeddings are scored against learned prototypes and ground-truth anchors, which are updated from the mask during training only, and the resulting prior is refined by image-specific self-support centroids.}
   \label{fig:modules}
 \end{figure*}
 
 \subsection{Frozen Encoder With Convolutional Adapters}
 \label{sec:encoder}
-The encoder is DINOv3 ViT-S/16~\cite{simeoni2025dinov3}, kept frozen. The frame is resized to $448\times448$ so that the $16$-pixel patches form a $28\times28$ grid of $384$-dimensional tokens. Each of the $12$ blocks is followed by a Conv-LoRA adapter~\cite{zhong2024convlora} of rank $r=16$ that acts on the block output $x$:
+The encoder is DINOv3 ViT-S/16~\cite{simeoni2025dinov3}, kept frozen. The benchmark gives every model $352\times352$ frames; DANG resizes them to $448\times448$ inside the network so that the $16$-pixel patches form a $28\times28$ grid of $384$-dimensional tokens. Each of the $12$ blocks is followed by a residual convolutional bottleneck adapter of rank $r=16$, in the spirit of Conv-LoRA~\cite{zhong2024convlora} and Convpass~\cite{jie2022convpass}, that acts on the patch tokens $x$ of the block output:
 \begin{equation}
   x \leftarrow x + W_{\uparrow}\,\mathrm{GELU}\bigl(z+\mathcal{K}_{3\times3}(z)\bigr),\qquad z=W_{\downarrow}x,
   \label{eq:convlora}
 \end{equation}
-where $W_{\downarrow}\in\mathbb{R}^{r\times384}$ and $W_{\uparrow}\in\mathbb{R}^{384\times r}$ are trained, $W_{\uparrow}$ is initialised to zero so that training starts from the frozen encoder, and $\mathcal{K}_{3\times3}$ is a depthwise convolution applied to the patch tokens on the $28\times28$ grid. The adapters add $0.15$M parameters. We read the normalised patch tokens after blocks $3$, $6$, $9$ and $12$ and project each with a $1\times1$ convolution, batch normalisation and activation to a map $T_\ell\in\mathbb{R}^{192\times28\times28}$, $\ell\in\{3,6,9,12\}$.
+where $W_{\downarrow}\in\mathbb{R}^{r\times384}$ and $W_{\uparrow}\in\mathbb{R}^{384\times r}$ are trained, $W_{\uparrow}$ is initialised to zero so that training starts from the frozen encoder, and $\mathcal{K}_{3\times3}$ is a depthwise convolution on the $28\times28$ token grid. The class and register tokens take the linear path $W_{\uparrow}W_{\downarrow}x$ only. Unlike LoRA, the adapter is a non-linear residual module, so it cannot be merged into the frozen weights; the adapters add $0.15$M parameters. We read the normalised patch tokens after blocks $3$, $6$, $9$ and $12$ and project each with a $1\times1$ convolution, batch normalisation and activation to a map $T_\ell\in\mathbb{R}^{192\times28\times28}$, $\ell\in\{3,6,9,12\}$.
 
 \subsection{Token Pyramid and Scale-Aware Decoder}
 \label{sec:decoder}
@@ -132,7 +134,7 @@ The head concatenates the three deepest maps $T_6$, $T_9$ and $T_{12}$, projects
   &\quad + w_{\text{a}}\bigl(\langle e_{u,v},a^+\rangle-\langle e_{u,v},a^-\rangle\bigr)+b.
   \label{eq:proto_prior}
 \end{align}
-The log-sum-exp with fixed sharpness $\beta$ is a soft maximum over prototypes; the temperature $\tau$, the bias $b$ and the bounded anchor weight $w_{\text{a}}$ are learned. During training only, $a^\pm$ are exponential moving averages of the embeddings at positions where the ground-truth mask, average-pooled to $28\times28$, is mostly foreground or mostly background. At training and test time the head then forms image-specific self-support centroids~\cite{fan2022ssp} weighted by the prior's own confidence, $c^+=\mathrm{Norm}(\sum_{u,v}q_{u,v}^2e_{u,v})$ and $c^-=\mathrm{Norm}(\sum_{u,v}(1-q_{u,v})^2e_{u,v})$ with $q=\sigma(\pi_{\text{prior}})$, and outputs the margin map
+The log-sum-exp with fixed sharpness $\beta$ is a soft maximum over prototypes; the temperature $\tau$, the bias $b$ and the bounded anchor weight $w_{\text{a}}$ are learned. During training only, $a^\pm$ are exponential moving averages of the embeddings at positions where the ground-truth mask, average-pooled to $28\times28$, is mostly foreground or mostly background; they start as the normalised means of the prototypes and are fixed at test time. At training and test time the head then forms image-specific self-support centroids~\cite{fan2022ssp} weighted by the prior's own confidence, $c^+=\mathrm{Norm}(\sum_{u,v}q_{u,v}^2e_{u,v})$ and $c^-=\mathrm{Norm}(\sum_{u,v}(1-q_{u,v})^2e_{u,v})$ with $q=\sigma(\pi_{\text{prior}})$ computed from a stop-gradient copy of the prior and a floor of $10^{-4}$ on both weights, and outputs the margin map
 \begin{equation}
   \pi_{\text{proto}}=\pi_{\text{prior}}+w_{\text{ss}}\bigl(\langle e,c^+\rangle-\langle e,c^-\rangle\bigr),
   \label{eq:proto_total}
@@ -152,16 +154,16 @@ DANG is trained with
   &\quad +\tfrac{0.25}{3}\textstyle\sum_{k\in\{8,16,32\}}\mathcal{L}_{\text{BCE+Dice}}^{w}(A_k^{\uparrow352},Y)+0.35\,\mathcal{L}_{\text{proto}}.
   \label{eq:loss}
 \end{align}
-Each image's terms are weighted by $w$, which grows as lesion area shrinks. The Tversky term $\mathcal{L}_{\text{Tv}}$ penalises false negatives more for small lesions. $\mathcal{L}_{\text{far}}$ is the mean predicted probability outside dilations of the ground truth. $\mathcal{L}_{\text{proto}}$ applies the cross-entropy, Dice and Tversky terms to $\pi_{\text{proto}}$ against the mask average-pooled to $28\times28$. Exact forms are in Appendix~\ref{app:impl}. During training, each image's amplitude spectrum is mixed with that of another image in the batch with probability $0.5$, keeping its phase (Fourier amplitude mix~\cite{xu2021fact}), to vary colour and illumination statistics.
+$\mathcal{L}_{\text{BCE+Dice}}$ is $0.5$ binary cross-entropy plus $0.5$ soft Dice with smoothing $1$. In the terms marked $w$, each image is weighted by $w$, which grows as lesion area shrinks and is normalised to mean $1$ in the batch. The Tversky term $\mathcal{L}_{\text{Tv}}$ (smoothing $1$) penalises false negatives more for small lesions. $\mathcal{L}_{\text{far}}$ is the unweighted mean over all pixels of the predicted probability times the average of four indicators of lying outside the ground truth dilated by $4$, $8$, $14$ and $20$ pixels. $\mathcal{L}_{\text{proto}}$ applies the cross-entropy, Dice and Tversky terms to $\pi_{\text{proto}}$ against the mask average-pooled to $28\times28$. Exact forms are in Appendix~\ref{app:impl}. During training, each image's amplitude spectrum is mixed with that of another image in the batch with probability $0.5$, keeping its phase (Fourier amplitude mix~\cite{xu2021fact}), to vary colour and illumination statistics.
 
 \section{Experimental Setup}
 \subsection{Data}
 \label{sec:data}
-We use the standard split~\cite{fan2020pranet}: $900$ Kvasir-SEG and $550$ CVC-ClinicDB images for training, and the five standard test sets kept exactly as published (Table~\ref{tab:data}). Because these test sets are small, we add two multi-centre cohorts. From PolypGen~\cite{ali2023polypgen} we keep $1{,}399$ of $1{,}536$ frames from its six centres, after dropping $125$ frames with empty masks and $12$ within-set duplicates. From PolypDB~\cite{jha2024polypdb} we keep $1{,}376$ frames of six centre and modality groups (white light, BLI, FICE, LCI and NBI); we drop its Norwegian white-light group, which comes from the hospital that collected Kvasir-SEG. Every kept frame is compared against all $1{,}450$ training images and the frames already kept from its own set. Two frames count as duplicates when their MD5 hashes match, or when the Pearson correlation of their $32\times32$ grey-scale thumbnails, taken after cropping the dark endoscope border, is at least $0.97$ and their masks overlap with IoU at least $0.8$. A $64$-bit difference hash was tried first and rejected because the black border dominates it on endoscopy frames. The highest thumbnail correlation of a kept frame with any training image is $0.94$ for PolypGen and $0.92$ for PolypDB.
+We use the standard split~\cite{fan2020pranet}: $900$ Kvasir-SEG and $550$ CVC-ClinicDB images for training, and the five standard test sets kept exactly as published (Table~\ref{tab:data}). Because these test sets are small, we add two multi-centre cohorts. From PolypGen~\cite{ali2023polypgen} we keep $1{,}399$ of $1{,}536$ frames from its six centres, after dropping $125$ frames with empty masks and $12$ within-set duplicates. From PolypDB~\cite{jha2024polypdb} we keep $1{,}376$ frames of six centre and modality groups (white light, BLI, FICE, LCI and NBI); we drop its Norwegian white-light group, which comes from the hospital that collected Kvasir-SEG. The kept NBI group also comes from Norwegian and Swedish sources and may include that hospital, so for this group only the imaging modality, not necessarily the centre, is new. Every kept frame is compared against all $1{,}450$ training images and the frames already kept from its own set. Two frames count as duplicates when their MD5 hashes match, or when the Pearson correlation of their $32\times32$ grey-scale thumbnails, taken after cropping the dark endoscope border, is at least $0.97$ and their masks overlap with IoU at least $0.8$. A $64$-bit difference hash was tried first and rejected because the black border dominates it on endoscopy frames. The highest thumbnail correlation of a kept frame with any training image is $0.94$ for PolypGen and $0.92$ for PolypDB.
 
 \begin{table}[!t]
   \centering
-  \caption{\textbf{Cohorts.} The five standard test sets are kept as published; PolypGen and PolypDB are deduplicated against the training images. Primary: the cohorts our claims rest on. PolypDB is the held-out final test.}
+  \caption{\textbf{Cohorts.} The five standard test sets are kept as published; PolypGen and PolypDB are deduplicated against the training images. Primary: the development cohorts our comparisons focus on. PolypDB is the held-out final test, evaluated once.}
   \label{tab:data}
   \vspace{2pt}
   \setlength{\tabcolsep}{3pt}\footnotesize
@@ -174,34 +176,34 @@ We use the standard split~\cite{fan2020pranet}: $900$ Kvasir-SEG and $550$ CVC-C
     ClinicDB & CVC-ClinicDB & 62 & in domain \\
     ColonDB & CVC-ColonDB~\cite{tajbakhsh2015automated} & 380 & primary \\
     ETIS & ETIS-LaribPolypDB~\cite{silva2014toward} & 196 & primary \\
-    CVC-300 & EndoScene test~\cite{fan2020pranet} & 60 & reported \\
+    CVC-300 & EndoScene test~\cite{fan2020pranet} & 60 & external \\
     PolypGen & PolypGen, 6 centres~\cite{ali2023polypgen} & 1,399 & primary \\
     PolypDB & PolypDB, 6 groups~\cite{jha2024polypdb} & 1,376 & final test \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-We base our claims on CVC-ColonDB, ETIS and PolypGen, the three cohorts that are both external to the training centres and large enough for per-image statistics. Kvasir and ClinicDB share their training centres, and ClinicDB and CVC-300 are so small that one image moves mean Dice by $1.6$ and $1.7$ points; we report them for comparability.
+Following the standard protocol, the benchmark has no validation split, and DANG's design was developed while inspecting the test cohorts. We therefore treat CVC-ColonDB, ETIS and PolypGen, the three cohorts that are external to the training centres and large enough for per-image statistics, as primary development cohorts, and PolypDB, which no design decision used, as the confirmatory test. Kvasir and ClinicDB share their training centres, and ClinicDB and CVC-300 are small (one image can move mean Dice by up to $1.6$ and $1.7$ points); we report them for comparability.
 
 \subsection{Models and Training}
 \label{sec:training}
 DANG is trained for $20$ epochs at $352\times352$ with batch size $16$, AdamW, linear warm-up and cosine decay, gradient clipping, mixed precision and an exponential moving average of the weights; all hyperparameters are listed in Table~\ref{tab:impl}. There is no validation split and no checkpoint selection: we evaluate the moving-average weights after the last epoch.
 
-Published scores rest on incompatible splits and are rarely tested for significance~\cite{urooj2026metrics}, and the released training scripts of some models select checkpoints on test data. We therefore retrain the compared models instead of copying their numbers. PraNet~\cite{fan2020pranet}, Polyp-PVT~\cite{dong2021polyp} and PraNet-V2~\cite{hu2026pranetv2} are retrained from their official code with the training settings of their papers and released scripts, and SegDINO~\cite{yang2025segdino}, which uses the same frozen DINOv3 ViT-S/16 encoder as DANG, with those of its paper. Every model is evaluated at its final epoch.
+Published scores rest on incompatible splits and are rarely tested for significance~\cite{urooj2026metrics}, and the released training scripts of some models select checkpoints on test data. We therefore retrain the compared models instead of copying their numbers. PraNet~\cite{fan2020pranet}, Polyp-PVT~\cite{dong2021polyp} and PraNet-V2~\cite{hu2026pranetv2} are retrained from their official code with the training settings of their papers and released scripts, and SegDINO~\cite{yang2025segdino}, which uses the same frozen DINOv3 ViT-S/16 encoder as DANG, with those of its paper. All models are thus evaluated under one protocol but trained with their own recipes, and every model is evaluated at its final epoch. When a seed was run twice, the first completed run is used.
 
 \subsection{Metrics and Statistics}
 \label{sec:stats}
-All models are scored by one evaluator. Probabilities are resized bilinearly to the native ground-truth resolution and thresholded at $0.5$; Dice is computed per image and averaged over the images of a cohort (for PolypGen and PolypDB, over all frames of all centres). For comparison with published tables we also report the toolbox mean Dice, the Dice averaged over $256$ thresholds of the min-max-normalised probability map, which is the metric of the evaluation scripts behind PraNet, Polyp-PVT and PraNet-V2.
+All models are scored by one evaluator. Logits are resized bilinearly to the native ground-truth resolution, passed through the sigmoid and thresholded at $0.5$; Dice is computed per image and averaged over the images of a cohort (for PolypGen and PolypDB, over all frames of all centres). For comparison with published tables we also report the toolbox mean Dice, the Dice averaged over $256$ thresholds of the min-max-normalised probability map, which is the metric of the evaluation scripts behind PraNet, Polyp-PVT and PraNet-V2. As secondary metrics we report boundary F1 (contours matched within $2$ pixels), the $95$th-percentile Hausdorff distance (HD95) at $352\times352$, and the failure rate, the share of frames with Dice below $50\%$.
 
-Five seeds ($42$--$46$) are run for every model. We test DANG against each compared model in two ways. At the seed level, a two-sided paired $t$-test compares the per-seed mean Dice of matched seeds ($n=5$). At the image level, a two-sided Wilcoxon signed-rank test~\cite{wilcoxon1945individual} compares per-image Dice averaged over the five seeds. For each compared model, Holm's procedure~\cite{holm1979simple} corrects each test over the three primary cohorts.
+Five seeds ($42$--$46$) are run for every model, and the seed is the unit of inference. At the seed level, a two-sided paired $t$-test compares the per-seed mean Dice of DANG and each compared model over matched seed labels ($n=5$); because runs of different codebases share no randomness, we also report Welch's unpaired test as a sensitivity check. For each compared model, Holm's procedure~\cite{holm1979simple} corrects the seed-level tests over the three primary cohorts; as a second check we apply Holm jointly over all four published models and three cohorts. At the image level, a two-sided Wilcoxon signed-rank test~\cite{wilcoxon1945individual} compares per-image Dice averaged over the five seeds, with zero differences dropped. Frames from the same video are not independent, and the test is conditional on the five trained models, so we use it only descriptively, together with the counts of images on which each model is better; no claim in this paper rests on image-level tests alone. Statistics were computed with SciPy.
 
-Inference cost is measured for all models in one process on one NVIDIA T4 at batch size $1$ and $352\times352$ input ($256\times256$ for SegDINO, its own resolution): the median of $300$ timed forward passes after $50$ warm-up passes, in FP16 autocast (eager) and with FP16 weights replayed from a CUDA graph. We also report multiply-accumulate operations (MACs) per frame and total parameters, frozen weights included.
+Inference cost is measured for all models in one process on one NVIDIA T4 at batch size $1$ and $352\times352$ input ($256\times256$ for SegDINO, its own resolution): the median of $300$ timed device-side forward passes after $50$ warm-up passes on resident input tensors (no data transfer or post-processing), averaged over two passes of the whole benchmark, which differ by at most $0.1$~ms. We time three modes: FP16 autocast (eager), FP16 weights, and FP16 weights replayed from a CUDA graph. We also report multiply-accumulate operations (MACs) per frame and the parameters of the timed model, frozen weights included.
 
 \section{Results}
 
 \begin{table*}[!t]
   \centering
-  \caption{\textbf{Comparison with retrained published models.} Dice (\%) at threshold $0.5$, mean $\pm$ SD over $5$ seeds, final-epoch weights, one evaluator. ColonDB, ETIS and PolypGen are the primary cohorts; PolypDB is the held-out final test, run once for the selected model. \textbf{Bold}: best in column. $^{*}$: worse than DANG after Holm correction (seed-level paired $t$-test, Section~\ref{sec:stats}). Params: total parameters in millions, frozen weights included; Trained: parameters updated in training.}
+  \caption{\textbf{Comparison with retrained published models.} Dice (\%) at threshold $0.5$, mean $\pm$ SD over $5$ seeds, final-epoch weights, one evaluator. ColonDB, ETIS and PolypGen are the primary cohorts; PolypDB is the held-out final test, evaluated once for the selected model. \textbf{Bold}: best in column. $^{*}$: worse than DANG after Holm correction (seed-level paired $t$-test over the primary cohorts, Section~\ref{sec:stats}); PolypDB tests are reported in the text. PraNet's $32.5$M include an unused $2.05$M classification layer of the official Res2Net-50. Params: total parameters in millions, frozen weights included; Trained: parameters updated in training.}
   \label{tab:main}
   \vspace{2pt}
   \setlength{\tabcolsep}{4pt}\resizebox{\textwidth}{!}{%
@@ -220,26 +222,32 @@ Inference cost is measured for all models in one process on one NVIDIA T4 at bat
 \begin{figure*}[!t]
   \centering
   \includegraphics[width=\linewidth]{../figs/qualitative_bench.jpg}
-  \caption{\textbf{Predictions on the primary cohorts, drawn at random.} Two frames per cohort, chosen by a fixed random generator among all frames (not curated); seed $42$ of each model. Orange contour: ground truth; blue fill: prediction at threshold $0.5$; number: per-image Dice (\%) at native resolution. Polyp-PVT's prediction masks were not retained; its strip gives the per-image Dice it logged for the same frames and seed.}
+  \caption{\textbf{Predictions on the primary cohorts, drawn at random.} Two frames per cohort, chosen by a fixed random generator among all frames (not curated); seed $42$ of each model. Orange contour: ground truth; blue fill: prediction at threshold $0.5$, shown at the network's output resolution; number: per-image Dice (\%) at native resolution. Polyp-PVT's prediction masks were not retained; its strip gives the per-image Dice it logged for the same frames and seed.}
   \label{fig:qual}
 \end{figure*}
 
 \begin{figure*}[!t]
   \centering
   \includegraphics[width=\linewidth]{../figs/per_centre.pdf}
-  \caption{\textbf{DANG gains most on the centres where every model is weakest.} Dice (\%) per centre of PolypGen \textbf{(a)} and per centre and imaging modality of PolypDB \textbf{(b)}; number of frames in parentheses. Points are means over $5$ seeds, bars $95\%$ $t$-intervals.}
+  \caption{\textbf{DANG gains most on the centres where every model is weakest.} Dice (\%) per centre of PolypGen \textbf{(a)} and per centre and imaging modality of PolypDB \textbf{(b)}; number of frames in parentheses. Points are means over $5$ seeds; bars are $95\%$ $t$-intervals over training seeds, not over patients or centres.}
   \label{fig:centre}
 \end{figure*}
 
 \subsection{Comparison With Retrained Published Models}
 \label{sec:sota}
-Table~\ref{tab:main} compares DANG with the four retrained models. Among them, Polyp-PVT is the strongest on ColonDB ($80.9\%$) and PolypGen ($81.4\%$), and PraNet-V2 on ETIS ($75.5\%$). DANG reaches $80.7\%$ on ColonDB, $82.7\%$ on ETIS and $84.2\%$ on PolypGen. On ColonDB it ties Polyp-PVT ($-0.2$ points); on ETIS and PolypGen it is $7.3$ and $2.7$ points above the best retrained model, with the smallest seed-to-seed SD of all models on the three primary cohorts ($0.2$--$0.7$ points). On Kvasir it is the best model ($92.2\%$, $+1.2$ points), while on ClinicDB ($89.7\%$) it is $3.2$ points below Polyp-PVT and on CVC-300 ($88.8\%$) $1.0$ point below PraNet. ClinicDB is one of the two training centres, so the models with fully fine-tuned encoders may fit it more closely; with $62$ images, one image is worth $1.6$ points, so the gap amounts to two images. On the held-out PolypDB, run once after all design decisions, DANG reaches $89.8\pm0.1\%$, $3.1$ points above Polyp-PVT ($86.7\%$), $4.4$ and $5.0$ points above PraNet-V2 and PraNet, and $17.5$ points above SegDINO; against Polyp-PVT this single pre-specified comparison is significant at the seed level (paired $t$-test, $p=0.005$) and at the image level ($p<0.001$; $713$ frames better, $662$ worse).
+Table~\ref{tab:main} compares DANG with the four retrained models.
 
-SegDINO, which uses the same frozen encoder with a light decoder, stays far below every other model, at $51.5\%$ on ColonDB and $43.2\%$ on ETIS. It is trained at the $256\times256$ input of its paper and without adapters, so this gap mixes input resolution, adaptation and decoder; Section~\ref{sec:components} shows that DANG with a fully frozen encoder still exceeds it by $14.5$--$28.7$ points on the primary cohorts. We keep it as the reference for a frozen foundation model with a light head: DANG uses the same frozen weights and trains a comparable number of parameters ($1.9$M against $2.5$M).
+\paragraph{Held-out test.} On PolypDB, evaluated once after all design decisions, DANG reaches $89.8\pm0.1\%$: $3.1$ points above Polyp-PVT ($86.7\%$; $95\%$ confidence interval of the seed-level difference $1.5$ to $4.7$ points, paired $p=0.005$, Welch $p=0.005$), $4.4$ and $5.0$ points above PraNet-V2 and PraNet, and $17.4$ points above SegDINO. Averaged over the six PolypDB groups instead of over frames, DANG reaches $88.3\%$ against $84.3\%$ for Polyp-PVT. Most frames are segmented about equally well by the two models: DANG is better on $713$ frames and worse on $662$, and the median per-frame difference is below $0.1$ point, so the higher mean comes mainly from fewer failed frames ($3.8$ against $7.5\%$ of frames below $50\%$ Dice, Table~\ref{tab:secondary}).
+
+\paragraph{Development cohorts.} Among the retrained models, Polyp-PVT is the strongest on ColonDB ($80.9\%$) and PolypGen ($81.4\%$), and PraNet-V2 on ETIS ($75.4\%$). DANG reaches $80.7\%$ on ColonDB, $82.7\%$ on ETIS and $84.2\%$ on PolypGen. On ETIS and PolypGen it is $7.3$ and $2.7$ points above the best retrained model, with the smallest seed-to-seed SD of the compared models on the three primary cohorts ($0.2$--$0.7$ points). On ColonDB its difference to Polyp-PVT, $-0.2$ points ($95\%$ confidence interval $-1.4$ to $+1.1$), is not significant.
+
+\paragraph{In domain and CVC-300.} On Kvasir DANG has the highest mean ($92.2\%$, $1.2$ points above Polyp-PVT), but it is better than Polyp-PVT on only $40$ of the $100$ images; the higher mean comes from a few frames on which Polyp-PVT fails. On ClinicDB it is $3.2$ points below Polyp-PVT and worse on $55$ of the $62$ images, a systematic deficit; a plausible reason, which we did not test, is that the fully fine-tuned encoders of the compared models fit the training centres more closely than a frozen encoder. On CVC-300 its mean is $1.0$ point below PraNet, although it is better on $40$ of the $60$ images.
+
+\paragraph{SegDINO.} SegDINO, which uses the same frozen encoder with a light decoder, stays far below every other model, at $51.5\%$ on ColonDB and $43.3\%$ on ETIS. It is trained at the $256\times256$ input of its paper and without adapters, so this gap mixes input resolution, adaptation and decoder; Section~\ref{sec:components} shows that DANG with a fully frozen encoder still exceeds it by $14.5$--$28.7$ points on the primary cohorts. We keep it as the reference for a frozen foundation model with a light head: DANG uses the same frozen weights and trains a comparable number of parameters ($1.9$M against $2.5$M).
 
 \begin{table*}[!t]
   \centering
-  \caption{\textbf{Paired tests of DANG against each retrained model} on the primary cohorts. $\Delta$: mean Dice difference (pp, DANG minus model) over $5$ matched seeds; $p_{\text{seed}}$: paired $t$-test over seeds; $p_{\text{img}}$: Wilcoxon signed-rank test over images on seed-averaged Dice, with the number of images on which DANG is better/worse. All $p$-values Holm-corrected over the three cohorts.}
+  \caption{\textbf{Paired tests of DANG against each retrained model} on the primary cohorts. $\Delta$: mean Dice difference (pp, DANG minus model) over $5$ matched seeds; $p_{\text{seed}}$: paired $t$-test over seeds; $p_{\text{img}}$: Wilcoxon signed-rank test over images on seed-averaged Dice, with the number of images on which DANG is better/worse; descriptive only, because frames from one video are not independent. All $p$-values Holm-corrected over the three cohorts.}
   \label{tab:stats}
   \vspace{2pt}
   \setlength{\tabcolsep}{6pt}\footnotesize\resizebox{\textwidth}{!}{%
@@ -255,11 +263,31 @@ SegDINO, which uses the same frozen encoder with a light decoder, stays far belo
   }
 \end{table*}
 
-\paragraph{Per centre.} Figure~\ref{fig:centre}a splits PolypGen by centre. DANG has the highest mean Dice on all six centres. Its margin over the best retrained model is $0.5$--$2.3$ points on Paris, Padova, Aviano and Alexandria and $6.1$ and $8.9$ points on Oslo and Oxford, the two centres on which every retrained model stays below $66\%$. On PolypDB (Figure~\ref{fig:centre}b), DANG is the best model on five of the six groups. Its gains are largest on the two virtual-chromoendoscopy modalities absent from training, narrow-band imaging ($83.8$ against $75.8\%$ for Polyp-PVT) and blue-light imaging ($81.8$ against $74.3\%$); on the $30$ Swedish white-light frames it is $0.9$ points below Polyp-PVT.
+\begin{table*}[!t]
+  \centering
+  \caption{\textbf{Secondary metrics on the external cohorts.} Boundary F1 (BF1, \%, contours within $2$ pixels; higher is better), HD95 (pixels at $352\times352$; lower is better) and failure rate (\% of frames with Dice below $50\%$; lower is better); means over $5$ seeds. \textbf{Bold}: best in column.}
+  \label{tab:secondary}
+  \vspace{2pt}
+  \setlength{\tabcolsep}{3.5pt}\resizebox{\textwidth}{!}{%
+  \begin{tabular}{l cccc cccc cccc}
+    \toprule
+    & \multicolumn{4}{c}{\textbf{BF1} $\uparrow$} & \multicolumn{4}{c}{\textbf{HD95} $\downarrow$} & \multicolumn{4}{c}{\textbf{Failure rate} $\downarrow$} \\
+    \cmidrule(lr){2-5} \cmidrule(lr){6-9} \cmidrule(lr){10-13}
+    \textbf{Model} & ColonDB & ETIS & PolypGen & PolypDB & ColonDB & ETIS & PolypGen & PolypDB & ColonDB & ETIS & PolypGen & PolypDB \\
+    \midrule
+    \rows{../figs/tab_secondary_rows.tex}
+    \bottomrule
+  \end{tabular}%
+  }
+\end{table*}
 
-\paragraph{Examples.} Figure~\ref{fig:qual} shows six frames drawn at random from the primary cohorts. Five are segmented well by PraNet, PraNet-V2, Polyp-PVT and DANG, while SegDINO adds scattered false positives on most of them (Dice $67$--$89\%$). On the second ETIS frame PraNet finds only a fragment of the lesion (Dice $3\%$), PraNet-V2 adds large false positives on the surrounding folds ($49\%$) and SegDINO reaches $12\%$, while Polyp-PVT and DANG reach $85$ and $86\%$.
+\paragraph{Per centre.} Figure~\ref{fig:centre}a splits PolypGen by centre. DANG has the highest mean Dice on all six centres. Its margin over the best retrained model is $0.5$--$2.3$ points on Paris, Padova, Aviano and Alexandria and $6.1$ and $8.9$ points on Oslo and Oxford, the two centres on which every retrained model stays below $66\%$. On PolypDB (Figure~\ref{fig:centre}b), DANG is the best model on five of the six groups. Its gains are largest on narrow-band imaging ($83.8$ against $75.8\%$ for Polyp-PVT) and blue-light imaging ($81.8$ against $74.3\%$), two of the four virtual-chromoendoscopy modalities absent from training; on the $30$ Swedish white-light frames it is $0.9$ points below Polyp-PVT. These per-group values are five-seed means without per-group tests, and four of the six groups have $70$ frames or fewer. Averaged over centres, PolypGen gives $82.2\%$ for DANG against $78.8\%$ for Polyp-PVT.
 
-\paragraph{Statistical tests.} Table~\ref{tab:stats} gives the paired tests on the primary cohorts. On ETIS and PolypGen, DANG is better than every retrained model at the seed and the image level after Holm correction; against Polyp-PVT the seed-level adjusted $p$-values are $0.007$ and $0.031$, and DANG is better on $123$ of $196$ ETIS images (worse on $70$) and on $746$ of $1{,}399$ PolypGen frames (worse on $647$). On ColonDB, DANG is better than PraNet, PraNet-V2 and SegDINO, and statistically indistinguishable from Polyp-PVT at both levels (adjusted $p=0.72$ and $0.99$; $187$ images better, $191$ worse).
+\paragraph{Examples.} Figure~\ref{fig:qual} shows six frames drawn at random from the primary cohorts. Five are segmented well by PraNet, PraNet-V2, Polyp-PVT and DANG, while SegDINO adds scattered false positives on several of them (Dice $67$--$89\%$). On the second ETIS frame PraNet finds only a fragment of the lesion (Dice $3\%$), PraNet-V2 adds large false positives on the surrounding folds ($49\%$) and SegDINO reaches $12\%$, while Polyp-PVT and DANG reach $85$ and $86\%$.
+
+\paragraph{Statistical tests.} Table~\ref{tab:stats} gives the tests on the primary cohorts. On ETIS and PolypGen, DANG is better than every retrained model at the seed level after Holm correction; against Polyp-PVT the adjusted $p$-values are $0.007$ and $0.031$. The conclusions are unchanged with Welch's unpaired test ($p=0.001$ and $0.008$ against Polyp-PVT) and with one Holm family over all twelve comparisons with published models (largest adjusted $p$ for these claims $0.031$). Descriptively, DANG is better on $123$ of $196$ ETIS images (worse on $70$) and on $746$ of $1{,}399$ PolypGen frames (worse on $647$). On ColonDB, DANG is better than PraNet, PraNet-V2 and SegDINO and not significantly different from Polyp-PVT (adjusted $p=0.72$; $187$ images better, $191$ worse).
+
+\paragraph{Boundaries and failures.} Table~\ref{tab:secondary} reports secondary metrics on the four external cohorts. DANG has the lowest HD95 and the lowest failure rate on all four; on ETIS, for example, $7.2\%$ of its frames fall below $50\%$ Dice, against $17.2$--$51.9\%$ for the retrained models. Its boundary F1, however, is $1.5$--$3.5$ points below that of Polyp-PVT on ColonDB, PolypGen and PolypDB and higher only on ETIS. DANG's Dice gains therefore come mainly from fewer missed or fragmented lesions rather than from sharper contours; the stride-$16$ token grid of the encoder may limit boundary precision.
 
 \begin{table}[!t]
   \centering
@@ -283,7 +311,7 @@ SegDINO, which uses the same frozen encoder with a light decoder, stays far belo
 \label{sec:components}
 \begin{table*}[!t]
   \centering
-  \caption{\textbf{Component ablation of DANG.} Dice (\%) at threshold $0.5$, mean $\pm$ SD over $5$ seeds, same recipe, evaluator and T4 hardware. Removing the prototype head also removes its logit term and its loss. $\Delta$: mean Dice difference on the primary cohorts, DANG minus the variant (pp). $^{*}$: significant after Holm correction at the seed and the image level; $^{\dagger}$: significant at the image level only (Wilcoxon signed-rank on seed-averaged Dice, Holm over the three cohorts). Params and Trained in millions.}
+  \caption{\textbf{Component ablation of DANG.} Dice (\%) at threshold $0.5$, mean $\pm$ SD over $5$ seeds, same recipe, evaluator and T4 hardware. Removing the prototype head also removes its logit term and its loss. $\Delta$: mean Dice difference on the primary cohorts, DANG minus the variant (pp). $^{*}$: significant at the seed level after Holm correction over the three cohorts (paired $t$-test). Params and Trained in millions.}
   \label{tab:components}
   \vspace{2pt}
   \setlength{\tabcolsep}{4pt}\resizebox{\textwidth}{!}{%
@@ -300,13 +328,13 @@ SegDINO, which uses the same frozen encoder with a light decoder, stays far belo
 \end{table*}
 Table~\ref{tab:components} removes each trained component of DANG in turn, over five seeds.
 
-\paragraph{Adapters.} Using the DINOv3 encoder fully frozen, without Conv-LoRA, costs $7.3$, $10.8$ and $5.5$ points on ColonDB, ETIS and PolypGen, the largest effect in the paper, significant at both levels (adjusted $p<0.001$). The $0.15$M adapter parameters are therefore what lets the frozen encoder transfer to colonoscopy. The fully frozen variant still exceeds SegDINO by $21.9$, $28.7$ and $14.5$ points on these cohorts, so SegDINO's low scores (Table~\ref{tab:main}) are not explained by the missing adapters alone; its lower input resolution and lighter decoder also contribute.
+\paragraph{Adapters.} Using the DINOv3 encoder fully frozen, without the adapters, costs $7.3$, $10.8$ and $5.5$ points on ColonDB, ETIS and PolypGen, the largest effect in the paper (seed-level adjusted $p<0.001$). The $0.15$M adapter parameters are therefore what lets the frozen encoder transfer to colonoscopy. The fully frozen variant still exceeds SegDINO by $21.9$, $28.7$ and $14.5$ points on these cohorts, so SegDINO's low scores (Table~\ref{tab:main}) are not explained by the missing adapters alone; its lower input resolution and lighter decoder also contribute.
 
-\paragraph{Prototype head.} Removing the dual-prototype margin head, its logit term and its loss lowers Dice by $0.7$, $0.9$ and $0.2$ points on the primary cohorts and halves the trained parameters ($1.94$M to $0.91$M). The effect is small: it is consistent across images (adjusted Wilcoxon $p<0.001$, $0.022$ and $<0.001$; on ColonDB DANG is better on $224$ images and worse on $154$) but not significant over five seeds (adjusted $p=0.20$, $0.31$ and $0.31$). On the in-domain sets the differences are between $-0.4$ and $+0.2$ points.
+\paragraph{Prototype head.} Removing the dual-prototype margin head, its logit term and its loss lowers Dice by $0.7$, $1.0$ and $0.2$ points on the primary cohorts and halves the trained parameters ($1.94$M to $0.91$M). The effect is small and not significant over five seeds (adjusted $p=0.20$, $0.31$ and $0.31$; the $95\%$ confidence intervals of the differences, $-0.1$ to $1.4$, $-0.6$ to $2.5$ and $-0.1$ to $0.6$ points, include zero); descriptively, DANG is better on $224$ of the $380$ ColonDB images and worse on $154$. On Kvasir, ClinicDB and CVC-300 the differences are $-0.2$, $+0.1$ and $-0.4$ points. We keep the head because its effect points the same way on all three primary cohorts, but the evidence for it is weak.
 
 \subsection{Choice of Decoder}
 \label{sec:ablation}
-Table~\ref{tab:ablation} compares three decoders on the same frozen DINOv3 ViT-S/16 with Conv-LoRA adapters and the same token pyramid, with the same loss family, recipe, evaluator and T4 hardware, over five seeds each. Besides the scale-aware decoder of DANG, we test four top-down stages that predict foreground and background logits gated by boundary uncertainty, with a $768$-channel fusion head and a prototype-anchored spatial support envelope (PASSE) on the output logits, and a query decoder in which one foreground and one background query attend to the pyramid with masked cross-attention.
+Table~\ref{tab:ablation} compares three decoder configurations, each with its own deep supervision, on the same frozen DINOv3 ViT-S/16 with adapters and the same token pyramid, with the same loss family, recipe, evaluator and T4 hardware, over five seeds each. Besides the scale-aware decoder of DANG, we test four top-down stages that predict foreground and background logits gated by boundary uncertainty, with a $768$-channel fusion head and a prototype-anchored spatial support envelope (PASSE) on the output logits, and a query decoder in which one foreground and one background query attend to the pyramid with masked cross-attention.
 
 \begin{table*}[!t]
   \centering
@@ -324,47 +352,49 @@ Table~\ref{tab:ablation} compares three decoders on the same frozen DINOv3 ViT-S
   }
 \end{table*}
 
-\paragraph{Accuracy and cost.} Over five seeds the fg/bg decoder with PASSE is the most accurate variant: it is $1.0$, $0.4$ and $0.5$ points above DANG on ColonDB, ETIS and PolypGen. The differences are small but consistent: they are not significant at the seed level after Holm correction (adjusted $p=0.064$, $0.116$ and $0.076$), but they are at the image level ($p<0.001$ on all three; on ColonDB it is better on $251$ images and worse on $128$). The query decoder lies between the two on ColonDB and PolypGen and below both on ETIS; none of its differences to DANG is significant at the seed level. We select the scale-aware decoder for its cost: against the fg/bg decoder with PASSE it removes $1.5$M parameters and $30\%$ of the MACs ($25.1$G against $36.1$G) and cuts the T4 latency by $19\%$ ($9.3$~ms against $11.6$~ms), for a loss of at most $1.0$ point on the primary cohorts. Where accuracy matters more than latency, the fg/bg decoder with PASSE is the better choice.
+\paragraph{Accuracy and cost.} Over five seeds the fg/bg decoder with PASSE is the most accurate variant: it is $1.0$, $0.4$ and $0.5$ points above DANG on ColonDB, ETIS and PolypGen. The differences are small and not significant at the seed level after Holm correction (adjusted $p=0.064$, $0.116$ and $0.076$); descriptively, the fg/bg decoder is better on $251$ ColonDB images and worse on $128$. The query decoder lies between the two on ColonDB and PolypGen and below both on ETIS; none of its differences to DANG is significant at the seed level, and descriptively it is better than DANG on $217$ of $380$ ColonDB images and $886$ of $1{,}399$ PolypGen frames. We select the scale-aware decoder for its cost: against the fg/bg decoder with PASSE it removes $1.5$M parameters and $30\%$ of the MACs ($25.1$G against $36.1$G) and cuts the T4 latency by $19\%$ ($9.3$~ms against $11.6$~ms), for a loss of at most $1.0$ point on the primary cohorts. Where accuracy matters more than latency, the fg/bg decoder with PASSE is the better choice. Because these variants were compared on the development cohorts, this choice is itself part of the adaptive design discussed in Section~\ref{sec:limits}.
 
 \subsection{Efficiency}
 \label{sec:efficiency}
 \begin{figure}[!t]
   \centering
   \includegraphics[width=\linewidth]{../figs/accuracy_latency.pdf}
-  \caption{\textbf{DANG is more accurate than the retrained models at a comparable latency.} Mean Dice over the three primary cohorts against batch-1 latency on one NVIDIA T4 (FP16 weights, CUDA graph). Points are means over $5$ seeds, bars $95\%$ $t$-intervals of the per-seed mean. Blue: retrained published models; green: SegDINO, timed at its $256\times256$ input; orange: decoders on the DANG encoder and token pyramid.}
+  \caption{\textbf{DANG is more accurate than the retrained models at a comparable latency.} Mean Dice over the three primary cohorts against batch-1 latency on one NVIDIA T4 (FP16 weights, CUDA graph; for DANG, FP16 weights change Dice by at most $0.02$ points). Points are means over $5$ seeds, bars $95\%$ $t$-intervals of the per-seed mean. Blue: retrained published models; green: SegDINO, timed at its $256\times256$ input; orange: decoders on the DANG encoder and token pyramid.}
   \label{fig:latency}
 \end{figure}
 \begin{table}[!t]
   \centering
-  \caption{\textbf{Inference cost on one NVIDIA T4} at batch size $1$ and $352\times352$ input, all models timed in one process. Params and Trained in millions; MACs per frame in billions; eager: FP16 autocast; graph: FP16 weights replayed from a CUDA graph; throughput at batch size $8$, eager. $^{\S}$: SegDINO is timed at its own $256\times256$ input.}
+  \caption{\textbf{Inference and training cost.} Inference on one NVIDIA T4 at batch size $1$ and $352\times352$ input, all models timed in one process; Params (of the timed model) and Trained in millions; MACs per frame in billions. Eager: FP16 autocast (DANG's encoder stays in FP32 in this mode, as in training); FP16: FP16 weights; graph: FP16 weights replayed from a CUDA graph; img/s: batch size $8$, eager. Train: mean training time per seed in minutes on one T4. $^{\|}$: the timed PraNet omits the unused $2.05$M Res2Net classifier counted in Table~\ref{tab:main}. $^{\P}$: trained on a faster cloud GPU, so its training time is not comparable. $^{\S}$: timed at its own $256\times256$ input.}
   \label{tab:eff}
   \vspace{2pt}
   \setlength{\tabcolsep}{3pt}\resizebox{\columnwidth}{!}{%
-  \begin{tabular}{l cc c cc c}
+  \begin{tabular}{l cc c ccc c c}
     \toprule
-    & & & & \multicolumn{2}{c}{\textbf{Latency (ms)}} & \\
-    \cmidrule(lr){5-6}
-    \textbf{Model} & Params & Trained & GMACs & eager & graph & img/s \\
+    & & & & \multicolumn{3}{c}{\textbf{Latency (ms)}} & & \\
+    \cmidrule(lr){5-7}
+    \textbf{Model} & Params & Trained & GMACs & eager & FP16 & graph & img/s & Train \\
     \midrule
     \rows{../figs/tab_eff_rows.tex}
     \bottomrule
   \end{tabular}%
   }
 \end{table}
-Table~\ref{tab:eff} lists the cost of each model, and Figure~\ref{fig:latency} plots accuracy against latency. DANG has the fewest total and trained parameters of all compared models, but about twice the MACs per frame of the Res2Net and PVTv2 models ($25.1$G against $10.8$--$13.0$G), because the frozen encoder runs at $448\times448$. With FP16 weights in a CUDA graph its batch-1 latency ($9.3$~ms, about $107$ frames per second) is below that of Polyp-PVT ($10.1$~ms) and PraNet-V2 ($10.2$~ms) and above that of PraNet ($8.4$~ms). SegDINO, at its $256\times256$ input and with a light head, is the fastest model ($3.7$~ms, $6.9$G MACs), but far less accurate. In eager mode, where the encoder runs in FP32 as in training, DANG has the lowest batch-1 latency of the $352\times352$ models ($22.7$~ms) but the lowest batch-$8$ throughput ($41$ against $155$--$174$ images per second); batched offline processing would need the FP16 encoder.
+Table~\ref{tab:eff} lists the cost of each model, and Figure~\ref{fig:latency} plots accuracy against latency. DANG has the fewest total and trained parameters of all compared models, but about twice the MACs per frame of the Res2Net and PVTv2 models ($25.1$G against $10.8$--$13.0$G), because the frozen encoder runs at $448\times448$. With FP16 weights in a CUDA graph its batch-1 latency ($9.3$~ms, about $107$ forward passes per second on the device) is below that of Polyp-PVT ($10.1$~ms) and PraNet-V2 ($10.2$~ms) and above that of PraNet ($8.4$~ms); the end-to-end time of a clinical pipeline would add transfer and post-processing. This advantage depends on CUDA graphs: with FP16 weights alone, Polyp-PVT ($18.3$~ms) is faster than DANG ($20.7$~ms). FP16 weights do not change DANG's accuracy: in the training runs, the FP16 copy of every seed scores within $0.02$ points of the FP32 model on the three primary cohorts. SegDINO, at its $256\times256$ input and with a light head, is the fastest model ($3.7$~ms, $6.9$G MACs), but far less accurate. In eager mode DANG has the lowest batch-1 latency of the $352\times352$ models ($22.7$~ms) but the lowest batch-$8$ throughput ($41$ against $155$--$174$ images per second), because its encoder stays in FP32 there; batched offline processing would need the FP16 encoder. Training DANG takes $27$ minutes per seed on one T4, against $66$ and $203$ minutes for PraNet and PraNet-V2 on the same GPU.
 
 \section{Limitations}
 \label{sec:limits}
 \begin{enumerate}
-  \item \textbf{Adaptive design.} The standard split has no validation set, and the decoder variants were compared on the test cohorts, including the three primary ones. Kvasir, ClinicDB, ColonDB, ETIS, CVC-300 and PolypGen are therefore not fully held out for DANG. PolypDB was never used for design and was evaluated once, on the final model; it is the only fully held-out result for DANG, and there DANG leads every retrained model, by $3.1$ to $17.5$ points.
-  \item \textbf{Recipes differ.} The compared models use the recipes of their papers, DANG its own; in particular only DANG trains with Fourier amplitude mixing and mixed precision. The comparison is between methods as published, not a controlled ablation of the recipe.
+  \item \textbf{Development on the test cohorts.} Following the standard benchmark, which has no validation split, DANG's design, including the choice of decoder, was developed while inspecting the test cohorts. Results on Kvasir, ClinicDB, ColonDB, ETIS, CVC-300 and PolypGen are therefore development results, and their tests do not account for this selection. PolypDB was never used for design and was evaluated once, on the final model; it is the confirmatory result, and there DANG leads every retrained model, by $3.1$ to $17.4$ points.
+  \item \textbf{Dependent frames.} The cohorts consist of video frames, and patient or sequence identifiers are not available for all of them, so image-level tests are descriptive; our inference rests on five training seeds, which gives only four degrees of freedom.
+  \item \textbf{Boundary precision.} DANG's boundary F1 is below that of Polyp-PVT on three of the four external cohorts, and it trails Polyp-PVT on the in-domain ClinicDB.
+  \item \textbf{Recipes differ.} The compared models use the recipes of their papers, DANG its own; in particular only DANG trains with Fourier amplitude mixing and mixed precision. The comparison is between methods as published, as is usual on this benchmark; isolating the contribution of each recipe element under matched training budgets is left to future work.
   \item \textbf{Hardware.} DANG and most compared models were trained on NVIDIA T4 GPUs; Polyp-PVT, whose $99$-epoch schedule exceeds our T4 session limit, was trained on cloud GPUs of another type.
   \item \textbf{One training split.} All models are trained on the same two centres; we do not test other training sources or label budgets.
   \item \textbf{Scope.} We evaluate single frames, not video, and report no clinical reader study.
 \end{enumerate}
 
 \section{Conclusion}
-DANG segments polyps from a frozen DINOv3 ViT-S/16 with convolutional adapters, a token pyramid, a scale-aware decoder and a dual-prototype margin head, training $1.9$M of $23.5$M parameters. Retrained under one protocol with five seeds, it ties Polyp-PVT on CVC-ColonDB and exceeds every compared model on ETIS-LaribPolypDB ($+7.3$ points) and PolypGen ($+2.7$ points), and on the held-out PolypDB ($89.8\%$, $+3.1$ points), at a T4 latency of $9.3$~ms, while it trails Polyp-PVT on the in-domain CVC-ClinicDB. The Conv-LoRA adapters are essential ($5.5$--$10.8$ points), the prototype head adds a small but image-level consistent $0.2$--$0.9$ points, all four pyramid levels come from the frozen encoder without a convolutional backbone, and a heavier fg/bg decoder with a support envelope buys up to $1$ further point at $24\%$ more latency. Next steps are training on other centres, video-level evaluation and a reader study.
+DANG segments polyps from a frozen DINOv3 ViT-S/16 with convolutional bottleneck adapters, a token pyramid, a scale-aware decoder and a dual-prototype margin head, training $1.9$M of $23.5$M parameters. On the held-out PolypDB, evaluated once, it reaches $89.8\%$ mean Dice, $3.1$ points above the strongest retrained model. On the development cohorts it exceeds every compared model on ETIS-LaribPolypDB ($+7.3$ points) and PolypGen ($+2.7$ points), shows no significant difference to Polyp-PVT on CVC-ColonDB, and trails Polyp-PVT on the in-domain CVC-ClinicDB and in boundary F1; its gains come mainly from fewer failed frames. The adapters are essential ($5.5$--$10.8$ points on the primary cohorts), the prototype head adds a small $0.2$--$1.0$ points that are not significant across seeds, and a heavier fg/bg decoder with a support envelope is up to $1$ point more accurate while DANG's decoder is $19\%$ faster ($9.3$~ms per frame on a T4 with CUDA graphs). Next steps are a validation split for design choices, training on other centres, sequence-level statistics, video-level evaluation and a reader study.
 
 \appendices
 
@@ -375,26 +405,29 @@ DANG segments polyps from a frozen DINOv3 ViT-S/16 with convolutional adapters, 
   \centering
   \caption{\textbf{DANG hyperparameters.} Lesion area $a$ is the ground-truth foreground percentage of the image.}
   \label{tab:impl}
-  \small
+  \footnotesize
+  \setlength{\tabcolsep}{4pt}
   \begin{tabular}{@{}l p{0.8\textwidth}@{}}
     \toprule
     \textbf{Item} & \textbf{Setting} \\
     \midrule
-    Encoder & DINOv3 ViT-S/16 (LVD-1689M), frozen, input $448\times448$, run in FP32 (its attention logits overflow FP16 during training) \\
-    Adapters & Conv-LoRA, rank $16$, after each of the $12$ blocks; readout after blocks $3$, $6$, $9$, $12$; $192$ decoder channels \\
+    Encoder & DINOv3 ViT-S/16 (LVD-1689M), frozen, input $448\times448$ (resized from $352\times352$), run in FP32 during training (its attention logits overflow FP16 under autocast); FP16 weights at inference change Dice by at most $0.02$ points \\
+    Adapters & residual convolutional bottleneck (Eq.~\eqref{eq:convlora}), rank $16$, after each of the $12$ blocks; readout after blocks $3$, $6$, $9$, $12$; $192$ decoder channels \\
     Optimiser & AdamW; learning rate $10^{-3}$ (adapters), $4\times10^{-4}$ (all other trained modules) \\
     Weight decay & $10^{-4}$; none on adapters, normalisation, bias, gain and prototype parameters \\
     Schedule & linear warm-up for $2$ epochs, then cosine decay to $5\%$; $20$ epochs; batch size $16$ \\
     Weight averaging & EMA with decay $\min(0.992,\,(1+t)/(10+t))$ at step $t$; final EMA weights are evaluated \\
     Other & gradient-norm clipping at $3.0$; FP16 mixed precision on T4 \\
-    Augmentation & scale $0.65$--$0.90$ ($p=0.3$) or $0.95$--$1.20$ with crop or pad; horizontal and vertical flips ($p=0.5$ each); $90^\circ$ rotations ($p=0.5$); brightness, contrast, saturation $\pm15\%$ ($p=0.4$); hue $\pm0.04$ ($p=0.3$); gamma $0.8$--$1.25$ ($p=0.3$); Fourier amplitude mix with a random batch partner, $\lambda\sim U(0,1)$ ($p=0.5$) \\
+    Augmentation & scale $0.65$--$0.90$ ($p=0.3$) or $0.95$--$1.20$ with crop or pad; horizontal and vertical flips ($p=0.5$ each); rotation by $90^\circ$, $180^\circ$ or $270^\circ$ ($p=0.5$); brightness, contrast, saturation $\pm15\%$ ($p=0.4$); hue $\pm0.04$ ($p=0.3$); gamma $0.8$--$1.25$ ($p=0.3$); Fourier amplitude mix with a random batch partner, $\lambda\sim U(0,1)$ ($p=0.5$) \\
     \midrule
-    Image weight & $w=\mathrm{clip}\bigl((3/(a+0.35))^{0.4},\,1,\,2.4\bigr)$ \\
-    Tversky & false-positive weight $0.45+0.15\,\sigma((a-1.5)/0.5)$, false-negative weight $1$ minus it \\
-    Far-field loss & mean probability outside the ground truth dilated by $4$, $8$, $14$ and $20$ pixels \\
+    Image weight & $w=\mathrm{clip}\bigl((3/(a+0.35))^{0.4},\,1,\,2.4\bigr)$, normalised to mean $1$ in the batch \\
+    BCE+Dice & $0.5$ binary cross-entropy (pixel mean) $+\,0.5\,(1-\text{soft Dice})$, Dice smoothing $1$ \\
+    Tversky & false-positive weight $0.45+0.15\,\sigma((a-1.5)/0.5)$, false-negative weight $1$ minus it, smoothing $1$ \\
+    Far-field loss & mean over all pixels of $\sigma(Z)\cdot\tfrac14\sum_{r}\mathbb{1}[\text{outside the mask dilated by } r]$, $r\in\{4,8,14,20\}$ pixels; not image-weighted \\
     Prototype head & $K=8+8$ prototypes, dimension $128$; $\beta=6$; $\tau$ learned, initialised at $12$ and clamped to $[4,25]$ \\
     & $w_{\text{a}}=10\cdot\tfrac12\tanh(\theta_{\text{a}})$, $w_{\text{ss}}=8\cdot\tfrac12\tanh(\theta_{\text{ss}})$ with learned $\theta$ \\
-    Anchors & momentum $0.95$; foreground where pooled mask $\ge0.35$, background where $\le0.10$ \\
+    Anchors & momentum $0.95$; foreground where pooled mask $\ge0.35$, background where $\le0.10$; initialised to the normalised prototype means \\
+    Self-support & weights $q^2+10^{-4}$ and $(1-q)^2+10^{-4}$, $q$ from a stop-gradient copy of $\pi_{\text{prior}}$ \\
     \bottomrule
   \end{tabular}
 \end{table*}
@@ -403,7 +436,7 @@ DANG segments polyps from a frozen DINOv3 ViT-S/16 with convolutional adapters, 
 All experiments use public, de-identified datasets (Kvasir-SEG~\cite{jha2020kvasir}, CVC-ClinicDB, CVC-ColonDB~\cite{tajbakhsh2015automated}, ETIS-LaribPolypDB~\cite{silva2014toward}, CVC-300, PolypGen~\cite{ali2023polypgen} and PolypDB~\cite{jha2024polypdb}) under their research licences; no new patient data were collected. Code, deduplication manifests, per-image evaluation logs and the scripts that regenerate every table from the raw logs will be released.
 
 \section*{Acknowledgment}
-The authors would like to express their sincere appreciation to the Vietnam Aerospace University for supporting this research during the 2026--2027 academic year.
+The authors would like to express their sincere appreciation to the Vietnam Aerospace University for supporting this research during the 2026--2027 academic year. During internal review, all reported statistics were independently re-derived from the raw evaluation logs by AI agents (Codex with GPT-6-Astra, and Antigravity and Claude Code with Claude Opus 5.5).
 
 \begin{thebibliography}{00}
 
@@ -517,6 +550,8 @@ The authors would like to express their sincere appreciation to the Vietnam Aero
 
 \bibitem{zhong2024convlora} Z. Zhong, Z. Tang, T. He, H. Fang, and C. Yuan, ``Convolution meets LoRA: Parameter efficient finetuning for segment anything model,'' in \emph{Proc. Int. Conf. Learn. Represent. (ICLR)}, 2024.
 
+\bibitem{jie2022convpass} S. Jie and Z.-H. Deng, ``Convolutional bypasses are better vision transformer adapters,'' 2022, \emph{arXiv:2207.07039}.
+
 
 \bibitem{ranftl2021vision} R. Ranftl, A. Bochkovskiy, and V. Koltun, ``Vision transformers for dense prediction,'' in \emph{Proc. IEEE/CVF Int. Conf. Comput. Vis. (ICCV)}, 2021, pp. 12179--12188.
 
@@ -531,6 +566,15 @@ The authors would like to express their sincere appreciation to the Vietnam Aero
 
 
 \end{thebibliography}
+
+\makeatletter
+\renewenvironment{IEEEbiographynophoto}[1]{%
+\addcontentsline{toc}{subsection}{#1}%
+\normalfont\biographyfont\interlinepenalty500%
+\vskip 1.5\baselineskip plus 0.1fil minus 0.5\baselineskip%
+\parskip=0pt\par%
+\noindent{\biographyheadfont\uppercase{#1}\ }\@IEEEgobbleleadPARNLSP}{\relax\par\normalfont}
+\makeatother
 
 \begin{IEEEbiographynophoto}{Dang Thanh Tuan}
 is currently pursuing a B.S. degree in Artificial Intelligence at FPT University, Ho Chi Minh City, Vietnam. His research interests include computer vision, machine learning, data-driven modeling, and AI for scientific discovery. He is particularly interested in developing innovative AI methodologies to address real-world challenges and advance scientific research. He aspires to pursue a Ph.D. degree and contribute to the advancement of these fields.

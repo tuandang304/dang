@@ -4,8 +4,12 @@ Reads BENCH_SEED_SUMMARY_JSON (per seed, per cohort) and BENCH_PER_IMAGE lines, 
 and writes figs/bench_metrics.json with per-cohort mean / SD / min / max and paired tests of DANG against every
 baseline:
   * seed level  : two-sided paired t-test over matched seeds (n <= 5) of the per-seed mean Dice;
-  * image level : Wilcoxon signed-rank test over images of the per-image Dice averaged over the matched seeds.
-Holm's correction is applied per baseline over the three primary cohorts (ColonDB, ETIS, PolypGen).
+  * image level : Wilcoxon signed-rank test over images of the per-image Dice averaged over the matched seeds
+                  (descriptive: frames from one video are not independent);
+  * sensitivity : Welch's unpaired t-test over seeds (runs of different codebases share no randomness).
+Holm's correction is applied per baseline over the three primary cohorts (ColonDB, ETIS, PolypGen), and, as a
+sensitivity check, jointly over all published baselines x primary cohorts (p_seed_holm_all).
+Statistics are stored at full precision; rounding happens only for display (figs/bench_tables.py).
 Runs that have not finished simply contribute fewer seeds; rerun this script after they land.
 
     uv run --isolated --no-project --with numpy --with scipy python figs/aggregate_bench.py [RUN_LOG_DIR]
@@ -35,10 +39,14 @@ GROUPS = {
     "R2-c": ["28d364fe", "77e8b315"],
     "A1-noproto": ["87b2758d"],                                         # DANG without the prototype head
     "A2-nolora": ["27a7c9d3"],                                          # DANG without Conv-LoRA (fully frozen)
+    "A3-pyramid-only": ["0afcc5a7"],                                    # neither Conv-LoRA nor prototype head
+    "A4-noampmix": ["401ebc2c"],                                        # DANG without Fourier amplitude mix
     "DANG": ["842016dd", "9963f524", "7e80a4ed"],                       # R2-b, the selected model; E1 adds PolypDB
 }
 DEPLOY_RUNS = ["55037939", "73f86fbe", "ba33170f"]   # one-host T4 latency: D3, D4, D5 (D5 adds SegDINO; later run wins)
-BASELINES = ["PraNet", "Polyp-PVT", "PraNet-V2", "SegDINO", "V12-b", "R2-c", "A1-noproto", "A2-nolora"]   # last two: five-seed ablation variants
+PUBLISHED = ["PraNet", "Polyp-PVT", "PraNet-V2", "SegDINO"]
+BASELINES = PUBLISHED + ["V12-b", "R2-c", "A1-noproto", "A2-nolora", "A3-pyramid-only", "A4-noampmix"]
+FAIL = 50.0                                         # a frame "fails" when its Dice is below 50 %
 COHORTS = ["Kvasir", "CVC-ClinicDB", "CVC-ColonDB", "ETIS-LaribPolypDB", "CVC-300", "PolypGen", "PolypDB"]
 PRIMARY = ["CVC-ColonDB", "ETIS-LaribPolypDB", "PolypGen"]
 METRICS = {"dice": "dice_native", "mdice_tb": "mdice_tb", "iou": "iou_native", "bf1": "boundary_f1", "hd95": "hd95",
@@ -98,8 +106,8 @@ def load(prefixes):
 
 def describe(vals):
     a = np.asarray(vals, dtype=float)
-    return {"n": len(a), "mean": round(float(a.mean()), 2), "sd": round(float(a.std(ddof=1)), 2) if len(a) > 1 else None,
-            "min": round(float(a.min()), 2), "max": round(float(a.max()), 2), "seeds": [round(float(v), 2) for v in a]}
+    return {"n": len(a), "mean": float(a.mean()), "sd": float(a.std(ddof=1)) if len(a) > 1 else None,
+            "min": float(a.min()), "max": float(a.max()), "seeds": [float(v) for v in a]}
 
 
 def holm(pvals):
@@ -129,6 +137,23 @@ def main():
                     entry["cohorts"][c]["per_domain"] = {
                         d: dict(describe([seeds[s]["cohorts"][c]["per_domain"][d]["dice_native"] for s in have]),
                                 n_images=seeds[have[0]]["cohorts"][c]["per_domain"][d]["n"]) for d in doms}
+        imgs = data[g][1]
+        for c in COHORTS:
+            have = [s for s in ss if c in entry["cohorts"] and imgs.get(s, {}).get(c)]
+            if c in entry["cohorts"] and have:
+                per = [np.array(list(imgs[s][c].values())) for s in have]
+                entry["cohorts"][c]["median_dice"] = describe([np.median(v) for v in per])
+                entry["cohorts"][c]["fail_rate"] = describe([100.0 * (v < FAIL).mean() for v in per])
+            if c in entry["cohorts"] and "per_domain" in entry["cohorts"][c]:
+                hv = [s for s in ss if c in seeds[s]["cohorts"]]
+                entry["cohorts"][c]["dice_macro"] = describe([seeds[s]["cohorts"][c]["macro"]["dice_native"] for s in hv])
+        if any("deploy_half" in seeds[s] for s in ss):          # FP16-weight accuracy check logged by the DANG runs
+            entry["deploy_half"] = {c: describe([seeds[s]["deploy_half"][c]["micro_dice"] for s in ss
+                                                 if c in seeds[s].get("deploy_half", {})])
+                                    for c in seeds[ss[0]].get("deploy_half", {})}
+        mins = [seeds[s]["train_minutes"] for s in ss if seeds[s].get("train_minutes")]
+        if mins:
+            entry["train_minutes"] = describe(mins)
         out["groups"][g] = entry
 
     d_seeds, d_imgs = data["DANG"]
@@ -141,15 +166,19 @@ def main():
                 continue
             dv = np.array([d_seeds[s]["cohorts"][c]["micro"]["dice_native"] for s in common])
             bv = np.array([b_seeds[s]["cohorts"][c]["micro"]["dice_native"] for s in common])
-            r = {"seeds": common, "delta": round(float((dv - bv).mean()), 2)}
+            r = {"seeds": common, "delta": float((dv - bv).mean())}
             if len(common) >= 3:
                 r["p_seed"] = float(stats.ttest_rel(dv, bv).pvalue)
+                r["p_welch"] = float(stats.ttest_ind(dv, bv, equal_var=False).pvalue)
+                ci = stats.t.ppf(0.975, len(common) - 1) * (dv - bv).std(ddof=1) / np.sqrt(len(common))
+                r["ci95"] = [float((dv - bv).mean() - ci), float((dv - bv).mean() + ci)]
             uids = set.intersection(*[set(d_imgs[s].get(c, {})) & set(b_imgs[s].get(c, {})) for s in common])
             if uids:
                 u = sorted(uids)
                 di = np.array([[d_imgs[s][c][k] for k in u] for s in common]).mean(0)
                 bi = np.array([[b_imgs[s][c][k] for k in u] for s in common]).mean(0)
-                r.update({"n_images": len(u), "delta_image": round(float((di - bi).mean()), 2),
+                r.update({"n_images": len(u), "delta_image": float((di - bi).mean()),
+                          "median_diff_image": float(np.median(di - bi)),
                           "p_image": float(stats.wilcoxon(di, bi).pvalue), "wins": int((di > bi).sum()),
                           "losses": int((di < bi).sum())})
             res[c] = r
@@ -159,6 +188,10 @@ def main():
                 res[c][key + "_holm"] = a
         out["tests"][b] = res
 
+    # sensitivity: one Holm family over all published baselines x primary cohorts (seed-level paired t-tests)
+    fam = [(b, c) for b in PUBLISHED for c in PRIMARY if "p_seed" in out["tests"].get(b, {}).get(c, {})]
+    for (b, c), a in zip(fam, holm([out["tests"][b][c]["p_seed"] for b, c in fam])):
+        out["tests"][b][c]["p_seed_holm_all"] = a
     OUT.write_text(json.dumps(out, indent=1))
     for g, e in out["groups"].items():
         row = " ".join(f"{c[:8]}={e['cohorts'][c]['dice']['mean']:.2f}" for c in COHORTS if c in e["cohorts"])
