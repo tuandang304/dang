@@ -2,6 +2,7 @@
 
 cfg.bench_model == ""         build and audit the cohorts only (no GPU work)
 cfg.bench_model in RECIPES    train with the official recipe (dang/bench/recipes.py), fp32, final-epoch weights
+                              ("pranet" | "polyp_pvt" | "pranet_v2" | "asgnet")
 cfg.bench_model == "dang"     train the configured DANG model with its own recipe, final EMA weights (no val split)
 
 Seeds are spread over all visible GPUs (one forked worker per GPU, e.g. Kaggle's 2x T4).
@@ -68,7 +69,7 @@ def run_one_seed(cfg, seed: int, data: dict, gpu_tag: str) -> dict:
     if cfg.bench_model in RECIPES:
         recipe = RECIPES[cfg.bench_model]
         model = recipe.build().to(device)
-        model = train_official(recipe, model, data["train"], device, log, num_workers=nw)
+        model = (recipe.train or train_official)(recipe, model, data["train"], device, log, num_workers=nw)
         logits_fn, amp_dtype = recipe.test_logits, None                     # official code runs fp32
     elif cfg.bench_model == "dang":
         from torch.utils.data import DataLoader
