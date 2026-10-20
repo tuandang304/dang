@@ -299,6 +299,130 @@ class TokenPyramid(nn.Module):
         return [self.up4(rs(sem[0], 8)), self.l8(rs(sem[1], 8)), self.l16(rs(sem[2], 16)), self.down32(rs(sem[3], 16))]
 
 
+class ResidualDepthwiseBlock(nn.Module):
+    """SegDINO-v2 (2606.17972, github.com/script-Yang/segdino_v2 @0965c799 dpt.py), verbatim: x + gamma * GELU(GN(PW(DW(x))))
+    with gamma initialised to zero."""
+
+    def __init__(self, channels, use_group_norm=True):
+        super().__init__()
+        self.depthwise = nn.Conv2d(channels, channels, 3, padding=1, groups=channels, bias=False)
+        self.pointwise = nn.Conv2d(channels, channels, 1, bias=False)
+        self.norm = (
+            nn.GroupNorm(min(32, channels), channels)
+            if use_group_norm
+            else nn.BatchNorm2d(channels)
+        )
+        self.act = nn.GELU()
+        self.gamma = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x):
+        residual = self.act(self.norm(self.pointwise(self.depthwise(x))))
+        return x + self.gamma * residual
+
+
+class ScaleAwareDecoder(nn.Module):
+    """SegDINO-v2 SAD (TPASADDecoder minus its own token resampling, which V12-b's TokenPyramid already provides):
+    intra-level residual refinement, then top-down x_k = R(up(x_{k+1}) + level_k); 1x1 output at stride 4.
+    Extra (DANG): 1x1 deep-supervision heads on the s8/s16/s32 merged levels."""
+
+    def __init__(self, dim: int):
+        super().__init__()
+        self.intra = nn.ModuleList([ResidualDepthwiseBlock(dim) for _ in range(4)])
+        self.inter = nn.ModuleList([ResidualDepthwiseBlock(dim) for _ in range(4)])
+        self.out_conv = nn.Conv2d(dim, 1, 1)
+        self.aux = nn.ModuleList([nn.Conv2d(dim, 1, 1) for _ in range(3)])
+
+    def forward(self, pyr):
+        lv = [blk(p) for blk, p in zip(self.intra, pyr)]          # s4, s8, s16, s32
+        x = self.inter[3](lv[3])
+        merged = [x]
+        for k in (2, 1, 0):
+            x = self.inter[k](F.interpolate(x, size=lv[k].shape[-2:], mode="bilinear", align_corners=False) + lv[k])
+            merged.append(x)
+        x1 = merged[-1]
+        aux = [head(m) for head, m in zip(self.aux, (merged[2], merged[1], merged[0]))]   # s8, s16, s32
+        return self.out_conv(x1), aux
+
+
+class QueryDecoderLayer(nn.Module):
+    """Mask2Former decoder layer (masked cross-attention -> self-attention -> FFN, post-norm)."""
+
+    def __init__(self, dim: int, heads: int = 8, ffn: int = 768):
+        super().__init__()
+        self.cross = nn.MultiheadAttention(dim, heads, batch_first=True)
+        self.self_attn = nn.MultiheadAttention(dim, heads, batch_first=True)
+        self.ffn = nn.Sequential(nn.Linear(dim, ffn), nn.GELU(), nn.Linear(ffn, dim))
+        self.n1, self.n2, self.n3 = nn.LayerNorm(dim), nn.LayerNorm(dim), nn.LayerNorm(dim)
+
+    def forward(self, q, qpos, mem, mpos, attn_mask=None):
+        q = self.n1(q + self.cross(q + qpos, mem + mpos, mem, attn_mask=attn_mask, need_weights=False)[0])
+        q = self.n2(q + self.self_attn(q + qpos, q + qpos, q, need_weights=False)[0])
+        return self.n3(q + self.ffn(q))
+
+
+class DualQueryMaskDecoder(nn.Module):
+    """Query-based mask decoding on the token pyramid (Mask2Former 2112.01527; encoder-only variants EoMT 2503.19108,
+    EoSeg 2607.00223). Two learnable queries (foreground, background); a light FPN pixel decoder gives stride-4 pixel
+    embeddings; 3 decoder layers attend to s32, s16, s8 tokens in turn. The foreground query's cross-attention is masked
+    to where the previous prediction is foreground (fallback: all tokens). Logit = (e_fg - e_bg) . pixel embedding."""
+
+    def __init__(self, dim: int, num_layers: int = 3):
+        super().__init__()
+        self.pix_lat = nn.ModuleList([ConvBNAct(dim, dim, kernel_size=1, padding=0) for _ in range(4)])
+        self.pix_out = nn.Sequential(SepConvBNAct(dim, dim), nn.Conv2d(dim, dim, 1))
+        self.query_feat = nn.Embedding(2, dim)
+        self.query_pos = nn.Embedding(2, dim)
+        self.level_embed = nn.Embedding(3, dim)
+        self.mem_proj = nn.ModuleList([nn.Conv2d(dim, dim, 1) for _ in range(3)])
+        self.layers = nn.ModuleList([QueryDecoderLayer(dim) for _ in range(num_layers)])
+        self.norm = nn.LayerNorm(dim)
+        self.mask_embed = nn.Sequential(nn.Linear(dim, dim), nn.GELU(), nn.Linear(dim, dim), nn.GELU(), nn.Linear(dim, dim))
+        self.scale = dim ** -0.5
+
+    @staticmethod
+    def _pos2d(h, w, dim, device, dtype):
+        """Fixed 2D sine position encoding (DETR), flattened to (h*w, dim)."""
+        npf = dim // 4
+        y, x = torch.meshgrid(torch.linspace(0, 1, h, device=device), torch.linspace(0, 1, w, device=device), indexing="ij")
+        omega = 1.0 / (10000 ** (torch.arange(npf, device=device, dtype=torch.float32) / npf))
+        out = [torch.sin(2 * math.pi * x.flatten()[:, None] * omega), torch.cos(2 * math.pi * x.flatten()[:, None] * omega),
+               torch.sin(2 * math.pi * y.flatten()[:, None] * omega), torch.cos(2 * math.pi * y.flatten()[:, None] * omega)]
+        return torch.cat(out, dim=1).to(dtype)
+
+    def _predict(self, q, pix):
+        e = self.mask_embed(self.norm(q))                                      # B, 2, C
+        maps = torch.einsum("bqc,bchw->bqhw", e, pix) * self.scale
+        return maps[:, 0:1], maps[:, 1:2]                                     # fg, bg logits at stride 4
+
+    def forward(self, pyr):
+        size4 = pyr[0].shape[-2:]
+        pix = sum(F.interpolate(l(p), size=size4, mode="bilinear", align_corners=False) for l, p in zip(self.pix_lat, pyr))
+        pix = self.pix_out(pix)
+        B = pix.shape[0]
+        q = self.query_feat.weight.unsqueeze(0).expand(B, -1, -1)
+        qpos = self.query_pos.weight.unsqueeze(0).expand(B, -1, -1)
+        fg, bg = self._predict(q, pix)
+        outs = [(fg, bg)]
+        heads = self.layers[0].cross.num_heads
+        for i, layer in enumerate(self.layers):
+            lvl = 2 - (i % 3)                                                    # s32 (pyr[3]) -> s16 -> s8
+            m = self.mem_proj[lvl](pyr[lvl + 1])
+            h, w = m.shape[-2:]
+            mem = m.flatten(2).transpose(1, 2)
+            mpos = (self._pos2d(h, w, m.shape[1], m.device, mem.dtype) + self.level_embed.weight[lvl]).unsqueeze(0)
+            # masked attention for the foreground query (Mask2Former): attend where p(fg) >= 0.5 at this level
+            p = torch.sigmoid(F.interpolate((fg - bg).float(), size=(h, w), mode="bilinear", align_corners=False))
+            block = (p.flatten(1) < 0.5)                                         # B, HW (True = not allowed)
+            block = block & ~block.all(dim=1, keepdim=True)                     # fallback: all tokens if empty
+            am = torch.zeros(B, 2, h * w, dtype=torch.bool, device=m.device)
+            am[:, 0] = block
+            am = am.repeat_interleave(heads, dim=0)                              # (B*heads, 2, HW)
+            q = layer(q, qpos, mem, mpos, attn_mask=am.detach())
+            fg, bg = self._predict(q, pix)
+            outs.append((fg, bg))
+        return outs
+
+
 class DANGv5(nn.Module):
     def __init__(self, cfg):
         super().__init__()
@@ -372,6 +496,16 @@ class DANGv5(nn.Module):
             self.apply_dw(tuple(cfg.v12_dw_fixed))
 
         self.proto_head = DualPrototypeMarginHead(dim=dim, proto_dim=cfg.proto_dim, num_prototypes=cfg.num_prototypes)
+
+        # round 2: decoding stack on the token pyramid ("dual" = V12-b) and the PASSE logit envelope
+        self.decoder = getattr(cfg, "v12_decoder", "dual")
+        self.use_passe = bool(getattr(cfg, "v12_passe", True))
+        if self.decoder == "sad":
+            self.sad = ScaleAwareDecoder(dim)
+        elif self.decoder == "query":
+            self.qdec = DualQueryMaskDecoder(dim)
+        if self.decoder != "dual":
+            return                                                         # no dual decoder stages / 768-ch head
 
         self.dec4 = DualDecoderStage(dim, has_top=False, use_proto=True)
         self.dec3 = DualDecoderStage(dim, has_top=True, use_proto=True)
@@ -472,6 +606,20 @@ class DANGv5(nn.Module):
         if self.phase is not None:
             loc[0] = self.phase(loc[0])
 
+        up = lambda t: F.interpolate(t.float(), size=(H, W), mode="bilinear", align_corners=False)
+        if self.decoder == "sad":
+            y, aux = self.sad(loc)
+            z = y.float() + 0.2 * F.interpolate(proto_logits.float(), size=y.shape[-2:], mode="bilinear", align_corners=False)
+            return {"logits": up(z), "aux_logits": [up(a) for a in aux], "bg_logits": None, "boundary_logits": None,
+                    "proto_logits": proto_logits}
+        if self.decoder == "query":
+            outs = self.qdec(loc)
+            fg, bg = outs[-1]
+            z = (fg - bg).float() + 0.2 * F.interpolate(proto_logits.float(), size=fg.shape[-2:], mode="bilinear",
+                                                        align_corners=False)
+            return {"logits": up(z), "aux_logits": [up(f - b) for f, b in outs[:-1]], "bg_logits": [up(b) for _, b in outs],
+                    "boundary_logits": None, "proto_logits": proto_logits}
+
         p4, f4, b4 = self.dec4(loc[3], proto=proto_logits)
         p3, f3, b3 = self.dec3(loc[2], p4, f4, b4, proto=proto_logits)
         p2, f2, b2 = self.dec2(loc[1], p3, f3, b3)
@@ -483,9 +631,9 @@ class DANGv5(nn.Module):
         stage = (f1 - b1).float() * 0.5
         z = 0.5 * self.head(cat).float() + 0.5 * stage
         z = 0.8 * z + 0.2 * F.interpolate(proto_logits.float(), size=size1, mode="bilinear", align_corners=False)
-        z = self._passe(z, f4 - b4, proto_logits)
+        if self.use_passe:
+            z = self._passe(z, f4 - b4, proto_logits)
 
-        up = lambda t: F.interpolate(t.float(), size=(H, W), mode="bilinear", align_corners=False)
         if self.detail is not None:
             d = self.detail(x)
             size2 = d.shape[-2:]
