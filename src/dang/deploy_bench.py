@@ -19,17 +19,12 @@ V8B = {"arch": "dang_v5", "v5_local": "convnext_tiny.dinov3_lvd1689m", "v5_vit":
        "v5_vit_size": 448, "v5_vit_layers": (2, 5, 8, 11), "v5_lora_blocks": 12, "v5_lora_rank": 16,
        "v5_vit_fp32": True, "v12_trunk": "dual", "v12_cache_rope": True}
 DW6 = (1, 3, 5, 7, 9, 11)   # latency does not depend on which blocks; training runs select them from data
-VARIANTS = {
-    "V8-b (reference)": V8B,
-    "V12-a ViT trunk + conv detail stem": {**V8B, "v12_trunk": "vit"},
-    "V12-b ViT trunk + token pyramid": {**V8B, "v12_trunk": "tpa"},
-    "info: V12-b uncached RoPE (= V12-L)": {**V8B, "v12_trunk": "tpa", "v12_cache_rope": False},
-    "info: V12-b + slim head": {**V8B, "v12_trunk": "tpa", "v12_head": "slim"},
-    "info: V12-b without Conv-LoRA": {**V8B, "v12_trunk": "tpa", "v5_lora_blocks": 0},
-    "info: V12-b + DWConv 6/12 + slim head": {**V8B, "v12_trunk": "tpa", "v12_dw_fixed": DW6, "v12_head": "slim"},
-    "info: bare ViT-S@448 readout (floor)": {"_vit_floor": True},
-    "DANG (R2-b, selected): token pyramid + SAD": {**V8B, "v12_trunk": "tpa", "v12_decoder": "sad", "v12_passe": False},
-    "R2-c: token pyramid + fg/bg query decoder": {**V8B, "v12_trunk": "tpa", "v12_decoder": "query", "v12_passe": False},
+VARIANTS = {   # every entry sets trunk, decoder and PASSE explicitly: the base config is R2-b
+    "V8-b: dual stream, fg/bg decoder, PASSE": {**V8B, "v12_trunk": "dual", "v12_decoder": "dual", "v12_passe": True},
+    "V12-b: token pyramid, fg/bg decoder, PASSE": {**V8B, "v12_trunk": "tpa", "v12_decoder": "dual", "v12_passe": True},
+    "R2-a: token pyramid, fg/bg decoder, no PASSE": {**V8B, "v12_trunk": "tpa", "v12_decoder": "dual", "v12_passe": False},
+    "R2-c: token pyramid, fg/bg query decoder": {**V8B, "v12_trunk": "tpa", "v12_decoder": "query", "v12_passe": False},
+    "DANG (R2-b): token pyramid, SAD": {**V8B, "v12_trunk": "tpa", "v12_decoder": "sad", "v12_passe": False},
     "PraNet (Res2Net-50)": {"arch": "pranet"},
     "Polyp-PVT (PVTv2-B2)": {"arch": "polyp_pvt"},
     "PraNet-V2 (PVTv2-B2)": {"arch": "pranet_v2"},
