@@ -1,10 +1,14 @@
-"""Build the flat IEEE Access LaTeX source package from ieee_access/paper.tex.
+"""Build the IEEE Access LaTeX source package from ieee_access/paper.tex.
 
-ScholarOne stores uploads without folders, and a main .tex that pulls in other text files is not accepted, so the
-package is flat and self-contained:
-  * the generated table rows (figs/tab_*_rows.tex) are written into the .tex in place of their \\rows{...} calls;
-  * figures are renamed by figure number (fig1 ... fig5) and author photos by author name, referenced without paths;
-  * the IEEE Access class, its fonts and logo files sit next to the .tex, unmodified.
+A main .tex that pulls in other text files is not accepted, so the .tex is self-contained; the package unzips into one
+folder:
+  DANG_IEEE_Access/
+    DANG_IEEE_Access.tex   main file (the generated table rows of figs/tab_*_rows.tex are written in)
+    README.txt             layout and compile command
+    figures/               fig1 ... fig5, by figure number
+    photos/                author photos, first name_last name
+    *.cls *.sty *.fd *.map *.pfb *.tfm *.png   IEEE Access template files, unmodified; they must stay next to the
+                                               .tex because the class loads its fonts and logos from there
 The script compiles the package twice and checks that its text matches ieee_access/paper.pdf.
 
     python3 ieee_access/build_submission.py OUT_DIR
@@ -20,9 +24,22 @@ HERE = Path(__file__).resolve().parent
 FIGS = HERE.parent / "figs"
 MAIN = "DANG_IEEE_Access"
 # old figure file -> submission name, in order of appearance in the paper
-FIGURES = {"arch_diagram.pdf": "fig1.pdf", "arch_modules.pdf": "fig2.pdf", "qualitative_bench.jpg": "fig3.jpg",
-           "per_centre.pdf": "fig4.pdf", "accuracy_latency.pdf": "fig5.pdf",
-           "bio_dang.jpg": "tuan_dang.jpg", "bio_le.jpg": "phunguyen_le.jpg"}
+FIGURES = {"arch_diagram.pdf": "figures/fig1.pdf", "arch_modules.pdf": "figures/fig2.pdf",
+           "qualitative_bench.jpg": "figures/fig3.jpg", "per_centre.pdf": "figures/fig4.pdf",
+           "accuracy_latency.pdf": "figures/fig5.pdf",
+           "bio_dang.jpg": "photos/tuan_dang.jpg", "bio_le.jpg": "photos/phunguyen_le.jpg"}
+README = """DANG: A DINOv3-Adapted Network With a Token-Pyramid Decoder for Generalizable Polyp Segmentation
+LaTeX source for IEEE Access.
+
+Main file      DANG_IEEE_Access.tex (self-contained; no \\input or \\include)
+Figures        figures/fig1.pdf ... figures/fig5.pdf (Fig. 3: figures/fig3.jpg), numbered as in the paper
+Author photos  photos/tuan_dang.jpg (Dang Thanh Tuan), photos/phunguyen_le.jpg (Le Phu-Nguyen)
+Template       ieeeaccess.cls, IEEEtran.cls, spotcolor.sty, logo.png, notaglinelogo.png, bullet.png and the
+               t1*.fd / t1-*.map / t1-*.pfb / t1-*.tfm font files: the official IEEE Access template, unmodified.
+               They stay next to the main file because the class loads its fonts and logos from that folder.
+
+Compile        pdflatex DANG_IEEE_Access.tex   (run twice)
+"""
 TEMPLATE = ["ieeeaccess.cls", "IEEEtran.cls", "spotcolor.sty", "logo.png", "notaglinelogo.png", "bullet.png"]
 TEMPLATE_GLOBS = ["*.pfb", "*.tfm", "*.map", "*.fd"]
 
@@ -35,7 +52,8 @@ def main(out):
     out = Path(out)
     if out.exists():
         shutil.rmtree(out)
-    out.mkdir(parents=True)
+    for d in ("figures", "photos"):
+        (out / d).mkdir(parents=True)
     tex = (HERE / "paper.tex").read_text()
 
     # inline the generated table rows; drop the helper macro that read them
@@ -56,6 +74,7 @@ def main(out):
         shutil.copy(FIGS / old, out / new)
     assert "../figs/" not in tex and "\\rows" not in tex and "\\input" not in tex
     (out / f"{MAIN}.tex").write_text(tex)
+    (out / "README.txt").write_text(README)
 
     for f in TEMPLATE:
         shutil.copy(HERE / f, out / f)
@@ -74,7 +93,7 @@ def main(out):
     shutil.move(out / f"{MAIN}.pdf", pdf)
     for ext in ("aux", "log", "out"):
         (out / f"{MAIN}.{ext}").unlink(missing_ok=True)
-    print(f"ok: {len(list(out.iterdir()))} files in {out}; compiled check copy {pdf}")
+    print(f"ok: {sum(1 for f in out.rglob('*') if f.is_file())} files in {out}; compiled check copy {pdf}")
 
 
 if __name__ == "__main__":
