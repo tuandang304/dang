@@ -28,7 +28,7 @@ FIGURES = {"arch_diagram.pdf": "figures/fig1.pdf", "arch_modules.pdf": "figures/
            "qualitative_bench.jpg": "figures/fig3.jpg", "per_centre.pdf": "figures/fig4.pdf",
            "accuracy_latency.pdf": "figures/fig5.pdf",
            "bio_dang.jpg": "photos/thanhtuan_dang.jpg", "bio_le.jpg": "photos/phunguyen_le.jpg"}
-README = """DANG: A DINOv3-Adapted Network With a Token-Pyramid Decoder for Generalizable Polyp Segmentation
+README = """DANG: A Dense Adapter Network for Generalizable Polyp Segmentation
 LaTeX source for IEEE Access.
 
 Main file      DANG_IEEE_Access.tex (self-contained; no \\input or \\include)
