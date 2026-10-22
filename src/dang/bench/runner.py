@@ -2,6 +2,7 @@
 
 cfg.bench_model == ""         build and audit the cohorts only (no GPU work)
 cfg.bench_model in RECIPES    train with the official recipe (dang/bench/recipes.py), fp32, final-epoch weights
+                              ("pranet" | "polyp_pvt" | "pranet_v2" | "segdino")
 cfg.bench_model == "dang"     train the configured DANG model with its own recipe, final EMA weights (no val split)
 
 Seeds are spread over all visible GPUs (one forked worker per GPU, e.g. Kaggle's 2x T4).
@@ -68,8 +69,26 @@ def run_one_seed(cfg, seed: int, data: dict, gpu_tag: str) -> dict:
     if cfg.bench_model in RECIPES:
         recipe = RECIPES[cfg.bench_model]
         model = recipe.build().to(device)
-        model = train_official(recipe, model, data["train"], device, log, num_workers=nw)
+        if recipe.train is not None:                                         # own loop (SegDINO)
+            model = recipe.train(recipe, model, data["train"], device, log, num_workers=nw)
+        else:
+            model = train_official(recipe, model, data["train"], device, log, num_workers=nw,
+                                   amp=bool(getattr(cfg, "bench_official_amp", False)))
         logits_fn, amp_dtype = recipe.test_logits, None                     # official code runs fp32
+        eval_size = recipe.eval_size
+    elif cfg.bench_model == "dang" and tuple(getattr(cfg, "bench_eval_weights", ())):
+        # evaluation only: load this seed's saved final (EMA) weights instead of training
+        from dang.train import build_model
+        model = build_model(cfg).to(device)
+        path = next(Path(d) / f"weights_dang_seed{seed}_fp16.pth" for d in cfg.bench_eval_weights
+                    if (Path(d) / f"weights_dang_seed{seed}_fp16.pth").exists())
+        state = torch.load(path, map_location=device)
+        missing, unexpected = model.load_state_dict({k: v.float() if v.is_floating_point() else v
+                                                     for k, v in state.items()}, strict=True)
+        model.eval()
+        log(f"EVAL ONLY: loaded {path} ({len(state)} tensors)")
+        logits_fn, amp_dtype = (lambda out: out["logits"]), None
+        eval_size = 352
     elif cfg.bench_model == "dang":
         from torch.utils.data import DataLoader
         from dang.data import MedicalSegDataset
@@ -94,6 +113,7 @@ def run_one_seed(cfg, seed: int, data: dict, gpu_tag: str) -> dict:
                                             use_scaler=use_scaler, epochs=cfg.bench_dang_epochs,
                                             warmup_epochs=cfg.warmup_epochs, tag=f"{gpu_tag} DANG seed {seed}")
         logits_fn = lambda out: out["logits"]
+        eval_size = 352
     else:
         raise ValueError(f"unknown bench_model {cfg.bench_model!r}")
     train_min = (time.time() - t0) / 60.0
@@ -101,19 +121,24 @@ def run_one_seed(cfg, seed: int, data: dict, gpu_tag: str) -> dict:
     log(f"trained in {train_min:.1f} min | params={params_m:.2f}M")
 
     out = _out_dir()
-    torch.save({k: (v.half() if v.is_floating_point() else v) for k, v in model.state_dict().items()},
-               out / f"weights_{cfg.bench_model}_seed{seed}_fp16.pth")
+    eval_only = bool(tuple(getattr(cfg, "bench_eval_weights", ())))
+    if not eval_only:
+        torch.save({k: (v.half() if v.is_floating_point() else v) for k, v in model.state_dict().items()},
+                   out / f"weights_{cfg.bench_model}_seed{seed}_fp16.pth")
     dump_zip = None
     if getattr(cfg, "bench_dump_seed", None) == seed:
         dump_zip = zipfile.ZipFile(out / f"pred_masks_{cfg.bench_model}_seed{seed}.zip", "w", zipfile.ZIP_DEFLATED)
 
     summary = {"model": cfg.bench_model, "variant": cfg.variant_name, "seed": seed, "train_minutes": round(train_min, 2),
                "params_m": round(params_m, 3), "manifest": data["audit"]["manifest_sha256_16"], "cohorts": {}}
+    only = tuple(getattr(cfg, "bench_eval_cohorts", ()))
     for cohort, samples in data["cohorts"].items():
+        if only and cohort not in only:
+            continue
         te = time.time()
         recs = evaluate_cohort(model, samples, logits_fn, device, amp_dtype=amp_dtype,
                                dump=(dump_zip, cohort) if dump_zip is not None else None,
-                               num_workers=nw)
+                               num_workers=nw, img_size=eval_size)
         summ = summarize(recs)
         summary["cohorts"][cohort] = summ
         m = summ["macro"]

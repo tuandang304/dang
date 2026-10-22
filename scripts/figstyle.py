@@ -3,7 +3,7 @@
 Vendor this file next to the figure scripts that import it, so a figure stays
 reproducible after the session that made it ends.
 
-    from orx_figstyle import COLUMN, PALETTE, figure, save, use_style
+    from figstyle import COLUMN, PALETTE, figure, save, use_style
 
     use_style()
     fig, ax = figure(width=COLUMN)

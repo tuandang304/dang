@@ -1,3 +1,4 @@
+import sys
 from dataclasses import dataclass, asdict
 
 
@@ -21,6 +22,10 @@ class ExperimentConfig:
     bench_dump_seed: int | None = 42          # binary 352x352 prediction masks for this seed (paper figures)
     bench_dang_epochs: int = 20
     bench_num_workers: int = 2
+    bench_official_amp: bool = False          # fp16 autocast in the official loop (off: every paper baseline ran fp32)
+    # evaluation only: directories holding weights_dang_seed<N>_fp16.pth from earlier runs, and the cohorts to score
+    bench_eval_weights: tuple[str, ...] = ()
+    bench_eval_cohorts: tuple[str, ...] = ()
 
     # Stress-test S1 (5% Few-Shot Kvasir = 40 images) + Full 100% (800 images)
     run_s1_10pct: bool = True
@@ -45,6 +50,7 @@ class ExperimentConfig:
     v12_trunk: str = "tpa"                             # "dual" = V8-b; "vit" = frozen ViT trunk + shallow conv stem
     v12_head: str = "v8b"                               # "v8b" = 3x3 conv on 768-ch concat; "slim" = 32-ch bottleneck
     v12_decoder: str = "sad"                            # round 2: "dual" = V12-b dual decoder + 768-ch head; "sad"; "query"
+    v12_proto: bool = True                              # ablations A1/A3: False removes the dual-prototype margin head
     v12_passe: bool = False                             # round 2: PASSE logit envelope on the final logits (V12-b: True)
     v12_eval_half: bool = True                          # also score ColonDB/ETIS/PolypGen with fp16 weights (deploy precision)
     v12_dw_blocks: int = 0                              # A: replace attention in this many ViT blocks by DW conv
@@ -94,8 +100,31 @@ class ExperimentConfig:
         d["seeds"] = list(self.seeds)
         d["v5_vit_layers"] = list(self.v5_vit_layers)
         d["v12_dw_fixed"] = list(self.v12_dw_fixed)
+        d["bench_eval_weights"] = list(self.bench_eval_weights)
+        d["bench_eval_cohorts"] = list(self.bench_eval_cohorts)
         return d
 
 
-def get_config() -> ExperimentConfig:
-    return ExperimentConfig()
+def _parse(value: str, default):
+    """Cast a command-line value to the type of the field's default."""
+    if value.lower() == "none":
+        return None
+    if isinstance(default, bool):
+        return value.lower() in ("1", "true", "yes")
+    if isinstance(default, tuple):
+        items = [v for v in value.split(",") if v]
+        return tuple(int(v) if v.lstrip("-").isdigit() else v for v in items)
+    if default is None:
+        return int(value)
+    return type(default)(value)
+
+
+def get_config(argv: list[str] | None = None) -> ExperimentConfig:
+    """Defaults above, overridden by `key=value` arguments, e.g. `bench_seeds=42,43,44,45,46 bench_polypdb=true`."""
+    cfg = ExperimentConfig()
+    for arg in sys.argv[1:] if argv is None else argv:
+        key, sep, value = arg.partition("=")
+        if not sep or not hasattr(cfg, key):
+            raise SystemExit(f"unknown config override {arg!r}; expected key=value with a field of ExperimentConfig")
+        setattr(cfg, key, _parse(value, getattr(cfg, key)))
+    return cfg
