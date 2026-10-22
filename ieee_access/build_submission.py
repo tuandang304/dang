@@ -27,13 +27,13 @@ MAIN = "DANG_IEEE_Access"
 FIGURES = {"arch_diagram.pdf": "figures/fig1.pdf", "arch_modules.pdf": "figures/fig2.pdf",
            "qualitative_bench.jpg": "figures/fig3.jpg", "per_centre.pdf": "figures/fig4.pdf",
            "accuracy_latency.pdf": "figures/fig5.pdf",
-           "bio_dang.jpg": "photos/tuan_dang.jpg", "bio_le.jpg": "photos/phunguyen_le.jpg"}
+           "bio_dang.jpg": "photos/thanhtuan_dang.jpg", "bio_le.jpg": "photos/phunguyen_le.jpg"}
 README = """DANG: A DINOv3-Adapted Network With a Token-Pyramid Decoder for Generalizable Polyp Segmentation
 LaTeX source for IEEE Access.
 
 Main file      DANG_IEEE_Access.tex (self-contained; no \\input or \\include)
 Figures        figures/fig1.pdf ... figures/fig5.pdf (Fig. 3: figures/fig3.jpg), numbered as in the paper
-Author photos  photos/tuan_dang.jpg (Dang Thanh Tuan), photos/phunguyen_le.jpg (Le Phu-Nguyen)
+Author photos  photos/thanhtuan_dang.jpg (Thanh-Tuan Dang), photos/phunguyen_le.jpg (Phu-Nguyen Le)
 Template       ieeeaccess.cls, IEEEtran.cls, spotcolor.sty, logo.png, notaglinelogo.png, bullet.png and the
                t1*.fd / t1-*.map / t1-*.pfb / t1-*.tfm font files: the official IEEE Access template, unmodified.
                They stay next to the main file because the class loads its fonts and logos from that folder.
