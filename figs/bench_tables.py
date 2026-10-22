@@ -124,10 +124,10 @@ def ablation_rows():
     return out
 
 
-COMPONENTS = [("\\textbf{AdaPolyp}", "DANG", 1.94), ("\\quad without prototype head", "A1-noproto", 0.92),
+# trained parameters counted on the built models (requires_grad): 1,936,592 / 914,124 / 1,787,216 / 764,748
+COMPONENTS = [("\\textbf{AdaPolyp}", "DANG", 1.94), ("\\quad without prototype head", "A1-noproto", 0.91),
               ("\\quad without adapters (frozen encoder)", "A2-nolora", 1.79),
-              # trained = total minus the 21.58M frozen encoder shared by all rows (A3 logs only the total)
-              ("\\quad without adapters and prototype head", "A3-pyramid-only", 0.77)]
+              ("\\quad without adapters and prototype head", "A3-pyramid-only", 0.76)]
 
 
 def component_rows():
