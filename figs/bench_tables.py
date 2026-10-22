@@ -23,7 +23,7 @@ NA = "--"
 # display name, group key, trainable params (M; all weights are trained in the published models)
 MAIN = [("PraNet~\\cite{fan2020pranet}", "PraNet", None), ("Polyp-PVT~\\cite{dong2021polyp}", "Polyp-PVT", None),
         ("PraNet-V2~\\cite{hu2026pranetv2}", "PraNet-V2", None), ("SegDINO~\\cite{yang2025segdino}", "SegDINO", 2.48),
-        ("\\textbf{DANG (ours)}", "DANG", 1.94)]
+        ("\\textbf{AdaPolyp (ours)}", "DANG", 1.94)]
 DEPLOY_NAME = {"PraNet": "PraNet (Res2Net-50)", "Polyp-PVT": "Polyp-PVT (PVTv2-B2)", "PraNet-V2": "PraNet-V2 (PVTv2-B2)",
                "DANG": ["DANG (R2-b): token pyramid, SAD", "DANG (R2-b, selected): token pyramid + SAD"], "V8-b": "V8-b: dual stream, fg/bg decoder, PASSE",
                "V12-b": "V12-b: token pyramid, fg/bg decoder, PASSE", "R2-a": "R2-a: token pyramid, fg/bg decoder, no PASSE",
@@ -108,7 +108,7 @@ def toolbox_rows():
 
 ABLATION = [("fg/bg decoder + PASSE", "V12-b"),
             ("fg/bg query decoder", "R2-c"),
-            ("\\textbf{DANG}: scale-aware decoder", "DANG")]
+            ("\\textbf{AdaPolyp}: scale-aware decoder", "DANG")]
 
 
 def ablation_rows():
@@ -124,7 +124,7 @@ def ablation_rows():
     return out
 
 
-COMPONENTS = [("\\textbf{DANG}", "DANG", 1.94), ("\\quad without prototype head", "A1-noproto", 0.92),
+COMPONENTS = [("\\textbf{AdaPolyp}", "DANG", 1.94), ("\\quad without prototype head", "A1-noproto", 0.92),
               ("\\quad without adapters (frozen encoder)", "A2-nolora", 1.79),
               # trained = total minus the 21.58M frozen encoder shared by all rows (A3 logs only the total)
               ("\\quad without adapters and prototype head", "A3-pyramid-only", 0.77)]
@@ -171,7 +171,7 @@ def eff_rows():
     """Inference cost from the one-host deploy run (inference-time parameter count of the timed model) and the mean
     training time per seed from the accuracy runs."""
     rows = [("PraNet$^{\\|}$", "PraNet"), ("Polyp-PVT$^{\\P}$", "Polyp-PVT"), ("PraNet-V2", "PraNet-V2"),
-            ("SegDINO$^{\\S}$", "SegDINO"), ("\\textbf{DANG (ours)}", "DANG")]
+            ("SegDINO$^{\\S}$", "SegDINO"), ("\\textbf{AdaPolyp (ours)}", "DANG")]
     trainable = {"SegDINO": 2.48, "DANG": 1.94}
     out = []
     for name, k in rows:
@@ -186,7 +186,7 @@ def eff_rows():
 
 
 SECONDARY = [("PraNet", "PraNet"), ("Polyp-PVT", "Polyp-PVT"), ("PraNet-V2", "PraNet-V2"), ("SegDINO", "SegDINO"),
-             ("\\textbf{DANG (ours)}", "DANG")]
+             ("\\textbf{AdaPolyp (ours)}", "DANG")]
 EXT4 = ["CVC-ColonDB", "ETIS-LaribPolypDB", "PolypGen", "PolypDB"]
 
 

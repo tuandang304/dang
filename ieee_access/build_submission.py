@@ -2,8 +2,8 @@
 
 A main .tex that pulls in other text files is not accepted, so the .tex is self-contained; the package unzips into one
 folder:
-  DANG_IEEE_Access/
-    DANG_IEEE_Access.tex   main file (the generated table rows of figs/tab_*_rows.tex are written in)
+  AdaPolyp_IEEE_Access/
+    AdaPolyp_IEEE_Access.tex   main file (the generated table rows of figs/tab_*_rows.tex are written in)
     README.txt             layout and compile command
     figures/               fig1 ... fig5, by figure number
     photos/                author photos, first name_last name
@@ -22,23 +22,23 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 FIGS = HERE.parent / "figs"
-MAIN = "DANG_IEEE_Access"
+MAIN = "AdaPolyp_IEEE_Access"
 # old figure file -> submission name, in order of appearance in the paper
 FIGURES = {"arch_diagram.pdf": "figures/fig1.pdf", "arch_modules.pdf": "figures/fig2.pdf",
            "qualitative_bench.jpg": "figures/fig3.jpg", "per_centre.pdf": "figures/fig4.pdf",
            "accuracy_latency.pdf": "figures/fig5.pdf",
            "bio_dang.jpg": "photos/thanhtuan_dang.jpg", "bio_le.jpg": "photos/phunguyen_le.jpg"}
-README = """DANG: A Dense Adapter Network for Generalizable Polyp Segmentation
+README = """AdaPolyp: Adapting a Frozen Vision Foundation Model for Generalizable Polyp Segmentation
 LaTeX source for IEEE Access.
 
-Main file      DANG_IEEE_Access.tex (self-contained; no \\input or \\include)
+Main file      AdaPolyp_IEEE_Access.tex (self-contained; no \\input or \\include)
 Figures        figures/fig1.pdf ... figures/fig5.pdf (Fig. 3: figures/fig3.jpg), numbered as in the paper
 Author photos  photos/thanhtuan_dang.jpg (Thanh-Tuan Dang), photos/phunguyen_le.jpg (Phu-Nguyen Le)
 Template       ieeeaccess.cls, IEEEtran.cls, spotcolor.sty, logo.png, notaglinelogo.png, bullet.png and the
                t1*.fd / t1-*.map / t1-*.pfb / t1-*.tfm font files: the official IEEE Access template, unmodified.
                They stay next to the main file because the class loads its fonts and logos from that folder.
 
-Compile        pdflatex DANG_IEEE_Access.tex   (run twice)
+Compile        pdflatex AdaPolyp_IEEE_Access.tex   (run twice)
 """
 TEMPLATE = ["ieeeaccess.cls", "IEEEtran.cls", "spotcolor.sty", "logo.png", "notaglinelogo.png", "bullet.png"]
 TEMPLATE_GLOBS = ["*.pfb", "*.tfm", "*.map", "*.fd"]

@@ -26,7 +26,7 @@ POINTS = [  # group, label, deploy name, colour
     ("Polyp-PVT", "Polyp-PVT", "Polyp-PVT (PVTv2-B2)", family("blue", 3)[2]),
     ("V12-b", "fg/bg + PASSE", "V12-b: token pyramid, fg/bg decoder, PASSE", family("red", 3)[0]),
     ("R2-c", "query", "R2-c: token pyramid, fg/bg query decoder", family("red", 3)[1]),
-    ("DANG", "DANG (ours)", "DANG (R2-b): token pyramid, SAD", PALETTE["red"]),
+    ("DANG", "AdaPolyp (ours)", "DANG (R2-b): token pyramid, SAD", PALETTE["red"]),
 ]
 
 OFFSET = {"SegDINO": (6, 0), "PraNet": (6, -2), "PraNet-V2": (6, -4), "Polyp-PVT": (6, -2), "V12-b": (2, -9),

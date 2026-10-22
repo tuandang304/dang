@@ -29,7 +29,7 @@ from orx_figstyle import PALETTE, WIDE, use_style  # noqa: E402
 RUNS = Path("~/.local/share/openresearch").expanduser()
 DICE_ONLY = ("Polyp-PVT", "48489f3c")      # masks not retained: show the logged per-image Dice only
 MODELS = [("PraNet", "2709562b", "pranet"), ("PraNet-V2", "e733ff21", "pranet_v2"), ("SegDINO", "5fa721d1", "segdino"),
-          ("DANG (ours)", "842016dd", "dang")]
+          ("AdaPolyp (ours)", "842016dd", "dang")]
 COHORTS = [("CVC-ColonDB", "ColonDB"), ("ETIS-LaribPolypDB", "ETIS"), ("PolypGen", "PolypGen")]
 PER_COHORT = 2
 SIZE = 352

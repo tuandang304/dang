@@ -16,7 +16,7 @@ HERE = Path(__file__).parent
 G = json.loads((HERE / "bench_metrics.json").read_text())["groups"]
 MODELS = ["SegDINO", "PraNet", "PraNet-V2", "Polyp-PVT", "DANG"]
 COLORS = {"SegDINO": PALETTE["green"]} | dict(zip(MODELS[1:4], family("blue", 3))) | {"DANG": PALETTE["red"]}
-LABELS = {"DANG": "DANG (ours)"}
+LABELS = {"DANG": "AdaPolyp (ours)"}
 DOMAINS = {
     "PolypGen": [("C1_Paris", "C1 Paris"), ("C2_Padova", "C2 Padova"), ("C3_Aviano", "C3 Aviano"),
                  ("C4_Oslo", "C4 Oslo"), ("C5_Oxford", "C5 Oxford"), ("C6_Alexandria", "C6 Alexandria")],
